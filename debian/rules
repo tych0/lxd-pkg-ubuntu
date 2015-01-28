@@ -1,0 +1,26 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+export GOPATH=$(CURDIR)/dist
+
+PKGDIR=debian/tmp
+
+%:
+	dh $@
+
+override_dh_clean:
+	make clean
+	dh_clean
+
+override_dh_install:
+	go install -v github.com/lxc/lxd/lxc
+	go install -v github.com/lxc/lxd/lxd
+	mkdir -p $(PKGDIR)/usr/bin
+	cp $(GOPATH)/bin/* $(PKGDIR)/usr/bin/
+	dh_install
+
+override_dh_auto_test:
+	# cd test && ./main.sh

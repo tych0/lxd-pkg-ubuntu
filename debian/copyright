@@ -1,0 +1,8 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: lxd
+Source: http://github.com/lxc/lxd-pkg-ubuntu
+
+Files: *
+Copyright: 2014-2015 Canonical Ltd
+License: Apache-2.0
+  The Apache 2.0 license is available in /usr/share/common-licenses/Apache-2.0.

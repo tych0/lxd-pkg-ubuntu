@@ -1,0 +1,5 @@
+lxd (0.1-dev-ubuntu1) utopic; urgency=medium
+
+  * Initial release.
+
+ -- Tycho Andersen <tycho@tycho.ws>  Wed, 28 Jan 2015 11:56:08 +0100
