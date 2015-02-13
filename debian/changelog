@@ -1,5 +1,5 @@
-lxd (0.1-0ubuntu1) UNRELEASED; urgency=medium
+lxd (0.1-0ubuntu1) vivid; urgency=medium
 
   * Initial upstream release.
 
- -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 13 Feb 2015 16:31:54 -0500
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 13 Feb 2015 16:32:33 -0500
