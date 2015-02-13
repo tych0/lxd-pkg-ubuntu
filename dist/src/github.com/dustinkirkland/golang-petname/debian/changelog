@@ -1,0 +1,91 @@
+golang-petname (1.6) unreleased; urgency=medium
+
+  * UNRELEASED
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Wed, 28 Jan 2015 16:10:05 -0600
+
+golang-petname (1.5-0ubuntu1) vivid; urgency=medium
+
+  * debian/update-wordlists.sh, petname.go, README.md:
+    - rebuild and release with updated wordlists
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Wed, 28 Jan 2015 16:10:03 -0600
+
+golang-petname (1.4-0ubuntu1) vivid; urgency=medium
+
+  * cmd/petname/main.go, petname.go, petname_test.go:
+    - change petname.PetName() to petname.Generate()
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Tue, 13 Jan 2015 11:19:06 -0600
+
+golang-petname (1.3-0ubuntu1) vivid; urgency=medium
+
+  * petname.go:
+    - add note that these lists aren't manually updated/modified
+    - drop the "Rand" prefix, which is implicit
+    - no need for time module
+  * cmd/petname/main.go, petname.go:
+    - move the prng seeding to the end caller of the function
+    - add our import deps, math/rand, time
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Tue, 13 Jan 2015 11:19:03 -0600
+
+golang-petname (1.2-0ubuntu1) vivid; urgency=medium
+
+  * petname.go, petname_test.go:
+    - add some inline godoc documentation, fix format
+  * remove stray file
+  * debian/control:
+    - arch: any, let it build where it builds
+  * debian/copyright:
+    - update upstream name
+  * debian/update-wordlists.sh:
+    - update word list location to share
+  * petname.go:
+    - update wordlists
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Mon, 12 Jan 2015 09:53:24 -0600
+
+golang-petname (1.1-0ubuntu1) vivid; urgency=medium
+
+  * debian/update-wordlists.sh, petname.go:
+    - update wordlists from upstream
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Tue, 16 Dec 2014 14:33:23 -0600
+
+golang-petname (1.0-0ubuntu1) vivid; urgency=medium
+
+  * adverbs.txt, debian/control, debian/petname.install, debian/python-
+    petname.install, __init__.py, Makefile, names.txt, petname.go.in,
+    petname/petname.py, petname/petname.py.in, === removed directory
+    petname, setup.py, update.sh:
+    - rework to a golang only package, rename accordingly
+  * debian/golang-petname.install, Makefile:
+    - update build, install binary, fix name
+  * debian/golang-petname.install, Makefile:
+    - clean up, install in the right place
+  * debian/control, debian/golang-petname.install, Makefile, update.sh
+    => debian/update-wordlists.sh:
+    - install binary into /usr/bin/golang-petname
+    - build depend on petname, update wordlists at build time
+  * adjectives.txt, adverbs.txt, names.txt:
+    - drop txt files, we build depend on petname now
+  * LICENSE:
+    - add license file
+  * README.md:
+    - update readme
+  * cmd/petname/main.go, debian/copyright, README.md:
+    - update readme, add local location of license
+  * debian/golang-petname.install, golang-petname.1:
+    - add a manpage
+  * debian/update-wordlists.sh:
+    - add instruction to sync README.md from upstream
+  * === renamed symlink src/github.com/dustinkirkland/petname =>
+    src/github.com/dustinkirkland/golang-petname:
+    - fix symlink
+  * debian/lintian-overrides:
+    - ignore no-stripped, statically linked binary
+  * README.md:
+    - readme updated
+
+ -- Dustin Kirkland <kirkland@ubuntu.com>  Tue, 16 Dec 2014 14:07:44 -0600
