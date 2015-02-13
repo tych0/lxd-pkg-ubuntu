@@ -1,0 +1,34 @@
+Source: lxd
+Section: admin
+Priority: optional
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Standards-Version: 3.9.5
+Homepage: https://linuxcontainers.org/
+Vcs-Git: git://github.com/lxc/lxd-pkg-ubuntu
+Vcs-Browser: https://github.com/lxc/lxd-pkg-ubuntu
+Build-Depends: debhelper (>= 9),
+               dh-systemd,
+               golang-go (>= 1.3~),
+               help2man,
+               lxc-dev (>= 1.1.0~),
+               pkg-config
+
+Package: lxd-client
+Architecture: amd64 i386 armhf
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Suggests: lxd
+Description: Container hypervisor based on LXC - client
+ LXD offers a REST API to remotely manage containers over the network,
+ using an image based workflow and with support for live migration.
+ .
+ This package contains the command line client.
+
+Package: lxd
+Architecture: amd64 i386 armhf
+Depends: lxc, ${misc:Depends}, ${shlibs:Depends}
+Recommends: lxd-client
+Description: Container hypervisor based on LXC - daemon
+ LXD offers a REST API to remotely manage containers over the network,
+ using an image based workflow and with support for live migration.
+ .
+ This package contains the LXD daemon.
