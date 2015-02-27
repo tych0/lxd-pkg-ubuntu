@@ -24,6 +24,7 @@ override_dh_install:
 
 	mkdir -p $(PKGDIR)/usr/share/man/man1/
 	help2man $(PKGDIR)/usr/bin/lxd -n "The container hypervisor - daemon" --no-info > $(PKGDIR)/usr/share/man/man1/lxd.1
+	help2man $(PKGDIR)/usr/bin/lxd-images -n "The container hypervisor - image importer" --version-string=$(VERSION) --no-info > $(PKGDIR)/usr/share/man/man1/lxd-images.1
 	help2man $(PKGDIR)/usr/bin/lxc -n "The container hypervisor - client" --no-info > $(PKGDIR)/usr/share/man/man1/lxc.1
 
 	dh_install
