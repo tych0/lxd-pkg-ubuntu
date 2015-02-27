@@ -15,7 +15,7 @@ Build-Depends: debhelper (>= 9),
                pkg-config
 
 Package: lxd-client
-Architecture: amd64 i386 armhf arm64
+Architecture: amd64 arm64 armhf i386
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Suggests: lxd
 Description: Container hypervisor based on LXC - client
@@ -25,8 +25,14 @@ Description: Container hypervisor based on LXC - client
  This package contains the command line client.
 
 Package: lxd
-Architecture: amd64 i386 armhf arm64
-Depends: lxc, ${misc:Depends}, ${shlibs:Depends}
+Architecture: amd64 arm64 armhf i386
+Depends: adduser,
+         gnupg,
+         lxc,
+         python3,
+         xz-utils,
+         ${misc:Depends},
+         ${shlibs:Depends}
 Recommends: lxd-client
 Description: Container hypervisor based on LXC - daemon
  LXD offers a REST API to remotely manage containers over the network,
