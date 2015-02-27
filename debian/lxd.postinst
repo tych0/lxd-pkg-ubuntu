@@ -31,7 +31,7 @@ add_groups()
             IFS=$OLD_IFS
 
             LAST=$(($2+$3))
-            [ "$LAST" -gt "$NEXT_UID" ] && NEXT_UID=$NEXT
+            [ "$LAST" -gt "$NEXT_UID" ] && NEXT_UID=$LAST
         done < /etc/subuid
         usermod --add-subuids ${NEXT_UID}-$(($NEXT_UID+65535)) lxd
         usermod --add-subuids ${NEXT_UID}-$(($NEXT_UID+65535)) root
@@ -45,10 +45,10 @@ add_groups()
             IFS=$OLD_IFS
 
             LAST=$(($2+$3))
-            [ "$LAST" -gt "$NEXT_GID" ] && NEXT_GID=$NEXT
+            [ "$LAST" -gt "$NEXT_GID" ] && NEXT_GID=$LAST
         done < /etc/subgid
-        usermod --add-subuids ${NEXT_GID}-$(($NEXT_GID+65535)) lxd
-        usermod --add-subuids ${NEXT_GID}-$(($NEXT_GID+65535)) root
+        usermod --add-subgids ${NEXT_GID}-$(($NEXT_GID+65535)) lxd
+        usermod --add-subgids ${NEXT_GID}-$(($NEXT_GID+65535)) root
     fi
 
     if ! getent group lxd >/dev/null; then

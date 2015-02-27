@@ -1,3 +1,4 @@
 usr/bin/lxd
 usr/bin/lxd-images
 usr/share/man/man1/lxd.1
+usr/share/man/man1/lxd-images.1
