@@ -19,6 +19,38 @@ set -e
 
 add_groups()
 {
+    if ! getent passwd lxd >/dev/null; then
+        adduser --system lxd --home /var/lib/lxd/ --shell /bin/false
+
+        # UID allocation
+        NEXT_UID=100000
+        while read line; do
+            OLD_IFS=$IFS
+            IFS=":"
+            set -- $line
+            IFS=$OLD_IFS
+
+            LAST=$(($2+$3))
+            [ "$LAST" -gt "$NEXT_UID" ] && NEXT_UID=$NEXT
+        done < /etc/subuid
+        usermod --add-subuids ${NEXT_UID}-$(($NEXT_UID+65535)) lxd
+        usermod --add-subuids ${NEXT_UID}-$(($NEXT_UID+65535)) root
+
+        # GID allocation
+        NEXT_GID=100000
+        while read line; do
+            OLD_IFS=$IFS
+            IFS=":"
+            set -- $line
+            IFS=$OLD_IFS
+
+            LAST=$(($2+$3))
+            [ "$LAST" -gt "$NEXT_GID" ] && NEXT_GID=$NEXT
+        done < /etc/subgid
+        usermod --add-subuids ${NEXT_GID}-$(($NEXT_GID+65535)) lxd
+        usermod --add-subuids ${NEXT_GID}-$(($NEXT_GID+65535)) root
+    fi
+
     if ! getent group lxd >/dev/null; then
         addgroup --system lxd
     fi
