@@ -19,7 +19,7 @@ Files: dist/src/github.com/gorilla/context/*
 Copyright: 2012 Rodrigo Moraes
 License: BSD-2-clause
 
-Files: dist/src/github.com/gosexy/*
+Files: dist/src/github.com/gosexy/gettext/*
 Copyright: 2012-2013 José Carlos Nieto
 License: Expat
 
@@ -29,6 +29,10 @@ License: Apache-2
 
 Files: dist/src/github.com/kr/pty/*
 Copyright: 2011 Keith Rarick
+License: Expat
+
+Files: dist/src/github.com/mattn/go-sqlite3/*
+Copyright: 2014 Yasuhiro Matsumoto
 License: Expat
 
 Files: dist/src/gopkg.in/lxc/go-lxc.v2/*
