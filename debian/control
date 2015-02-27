@@ -15,7 +15,7 @@ Build-Depends: debhelper (>= 9),
                pkg-config
 
 Package: lxd-client
-Architecture: amd64 arm64 armhf i386
+Architecture: amd64 armhf i386
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Suggests: lxd
 Description: Container hypervisor based on LXC - client
@@ -25,7 +25,7 @@ Description: Container hypervisor based on LXC - client
  This package contains the command line client.
 
 Package: lxd
-Architecture: amd64 arm64 armhf i386
+Architecture: amd64 armhf i386
 Depends: adduser,
          gnupg,
          lxc,
