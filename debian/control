@@ -27,9 +27,12 @@ Description: Container hypervisor based on LXC - client
 Package: lxd
 Architecture: amd64 armhf i386
 Depends: adduser,
+         acl,
          gnupg,
          lxc,
          python3,
+         rsync,
+         tar,
          xz-utils,
          ${misc:Depends},
          ${shlibs:Depends}
