@@ -33,7 +33,6 @@ Depends: acl,
          lxc,
          python3,
          rsync,
-         tar,
          xz-utils,
          ${misc:Depends},
          ${shlibs:Depends}
