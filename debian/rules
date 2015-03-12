@@ -16,8 +16,8 @@ export PATH := $(PATH):$(GOPATH)/bin/
 override_dh_auto_build: ;
 
 override_dh_install:
-	go install -v github.com/lxc/lxd/lxc
-	go install -v github.com/lxc/lxd/lxd
+	go install -v -x github.com/lxc/lxd/lxc
+	go install -v -x github.com/lxc/lxd/lxd
 	mkdir -p $(PKGDIR)/usr/bin $(PKGDIR)/usr/share/
 	cp $(GOPATH)/bin/* $(PKGDIR)/usr/bin/
 	cp scripts/lxd-images $(PKGDIR)/usr/bin/
