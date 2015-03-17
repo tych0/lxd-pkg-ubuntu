@@ -27,10 +27,6 @@ Files: dist/src/github.com/dustinkirkland/golang-petname/*
 Copyright: 2014 Dustin Kirkland <dustin.kirkland@gmail.com>
 License: Apache-2
 
-Files: dist/src/github.com/kr/pty/*
-Copyright: 2011 Keith Rarick
-License: Expat
-
 Files: dist/src/github.com/mattn/go-sqlite3/*
 Copyright: 2014 Yasuhiro Matsumoto
 License: Expat
