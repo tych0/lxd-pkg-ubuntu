@@ -27,6 +27,44 @@ type syncResponse struct {
 	metadata interface{}
 }
 
+/*
+  fname: name of the file without path
+  headers: any other headers that should be set in the response
+*/
+type fileResponse struct {
+	req      *http.Request
+	path     string
+	filename string
+	headers  map[string]string
+}
+
+func FileResponse(r *http.Request, path string, filename string, headers map[string]string) Response {
+	return &fileResponse{r, path, filename, headers}
+}
+
+func (r *fileResponse) Render(w http.ResponseWriter) error {
+
+	f, err := os.Open(r.path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	if r.headers != nil {
+		for k, v := range r.headers {
+			w.Header().Set(k, v)
+		}
+	}
+
+	http.ServeContent(w, r.req, r.filename, fi.ModTime(), f)
+	return nil
+}
+
 func (r *syncResponse) Render(w http.ResponseWriter) error {
 	status := shared.Success
 	if !r.success {
@@ -66,11 +104,13 @@ type async struct {
 type asyncResponse struct {
 	run        func() shared.OperationResult
 	cancel     func() error
-	ws         shared.OperationSocket
+	ws         shared.OperationWebsocket
 	containers []string
+	done       chan shared.OperationResult
 }
 
 func (r *asyncResponse) Render(w http.ResponseWriter) error {
+
 	op, err := CreateOperation(nil, r.run, r.cancel, r.ws)
 	if err != nil {
 		return err
@@ -83,14 +123,14 @@ func (r *asyncResponse) Render(w http.ResponseWriter) error {
 
 	body := async{Type: lxd.Async, Status: shared.OK.String(), StatusCode: shared.OK, Operation: op}
 	if r.ws != nil {
-		body.Metadata = shared.Jmap{"websocket_secret": r.ws.Secret()}
+		body.Metadata = r.ws.Metadata()
 	}
 
 	if r.containers != nil && len(r.containers) > 0 {
 		body.Resources = map[string][]string{}
-		containers := make([]string, 0)
+		var containers []string
 		for _, c := range r.containers {
-			containers = append(containers, fmt.Sprintf("/%s/containers/%s", shared.Version, c))
+			containers = append(containers, fmt.Sprintf("/%s/containers/%s", shared.APIVersion, c))
 		}
 
 		body.Resources["containers"] = containers
@@ -102,11 +142,11 @@ func (r *asyncResponse) Render(w http.ResponseWriter) error {
 }
 
 func AsyncResponse(run func() shared.OperationResult, cancel func() error) Response {
-	return AsyncResponseWithWs(run, cancel, nil)
+	return &asyncResponse{run: run, cancel: cancel}
 }
 
-func AsyncResponseWithWs(run func() shared.OperationResult, cancel func() error, ws shared.OperationSocket) Response {
-	return &asyncResponse{run, cancel, ws, nil}
+func AsyncResponseWithWs(ws shared.OperationWebsocket, cancel func() error) Response {
+	return &asyncResponse{run: ws.Do, cancel: cancel, ws: ws}
 }
 
 type ErrorResponse struct {

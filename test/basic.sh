@@ -1,23 +1,89 @@
 test_basic_usage() {
-  lxc launch ubuntu foo
-  # should fail if foo isn't running
-  lxc stop foo
+  if ! lxc image alias list | grep -q ^testimage$; then
+    if [ -e "$LXD_TEST_IMAGE" ]; then
+        IMAGE_SHA256=$(sha256sum "$LXD_TEST_IMAGE" | cut -d ' ' -f1)
+        lxc image import $LXD_TEST_IMAGE
+        lxc image alias create testimage $IMAGE_SHA256
+    else
+        ../scripts/lxd-images import busybox --alias testimage
+    fi
+  fi
+
+  # Test image export
+  sum=$(lxc image info testimage | grep ^Hash | cut -d' ' -f2)
+  lxc image export testimage ${LXD_DIR}/
+  if [ -e "$LXD_TEST_IMAGE" ]; then
+      name=$(basename $LXD_TEST_IMAGE)
+  else
+      name=${sum}.tar.xz
+  fi
+  [ "$sum" = "$(sha256sum ${LXD_DIR}/${name} | cut -d' ' -f1)" ]
+
+  # Test image delete
+  lxc image delete testimage
+
+  # Re-import the image
+  mv ${LXD_DIR}/$name ${LXD_DIR}/testimage.tar.xz
+  lxc image import ${LXD_DIR}/testimage.tar.xz
+  lxc image alias create testimage $sum
+  rm ${LXD_DIR}/testimage.tar.xz
+
+  # Test filename for image export (should be "out")
+  lxc image export testimage ${LXD_DIR}/
+  [ "$sum" = "$(sha256sum ${LXD_DIR}/testimage.tar.xz | cut -d' ' -f1)" ]
+  rm ${LXD_DIR}/testimage.tar.xz
+
+  # Test container creation
+  lxc init testimage foo
+  lxc list | grep foo | grep STOPPED
   lxc delete foo
 
-  lxc init ubuntu foo
+  # Test "nonetype" container creation
+  wait_for my_curl -X POST $BASEURL/1.0/containers \
+        -d "{\"name\":\"nonetype\",\"source\":{\"type\":\"none\"}}"
+  lxc delete nonetype
 
-  # did it get created?
-  lxc list | grep foo
+  # Test "nonetype" container creation with an LXC config
+  wait_for my_curl -X POST $BASEURL/1.0/containers \
+        -d "{\"name\":\"configtest\",\"config\":{\"raw.lxc\":\"lxc.hook.clone=/bin/true\"},\"source\":{\"type\":\"none\"}}"
+  [ "$(my_curl $BASEURL/1.0/containers/configtest | jq -r .metadata.config[\"raw.lxc\"])" = "lxc.hook.clone=/bin/true" ]
+  lxc delete configtest
+
+  # Anything below this will not get run inside Travis-CI
+  if [ -n "$TRAVIS_PULL_REQUEST" ]; then
+    return
+  fi
+
+  # Create and start a container
+  lxc launch testimage foo
+  lxc list | grep foo | grep RUNNING
+  lxc stop foo --force  # stop is hanging
 
   # cycle it a few times
   lxc start foo
-  lxc stop foo
+  lxc stop foo  --force # stop is hanging
   lxc start foo
 
+  # check that we can set the environment
+  lxc exec foo pwd | grep /root
+  lxc exec --env BEST_BAND=meshuggah foo env | grep meshuggah
+  lxc exec foo ip link show | grep eth0
+
   # Make sure it is the right version
-  lxc exec foo /bin/cat /etc/issue | grep 14.04
+  echo abc > ${LXD_DIR}/in
+  lxc file push ${LXD_DIR}/in foo/root/
+  lxc exec foo /bin/cat /root/in | grep abc
+  echo foo | lxc exec foo tee /tmp/foo
+
+  # Detect regressions/hangs in exec
+  sum=$(ps aux | tee ${LXD_DIR}/out | lxc exec foo md5sum | cut -d' ' -f1)
+  [ "$sum" = "$(md5sum ${LXD_DIR}/out | cut -d' ' -f1)" ]
+  rm ${LXD_DIR}/out
+
+  # This is why we can't have nice things.
+  content=$(cat "${LXD_DIR}/lxc/foo/rootfs/tmp/foo")
+  [ "$content" = "foo" ]
 
   # cleanup
-  lxc stop foo
   lxc delete foo
 }

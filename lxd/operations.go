@@ -15,7 +15,7 @@ import (
 var lock sync.Mutex
 var operations map[string]*shared.Operation = make(map[string]*shared.Operation)
 
-func CreateOperation(metadata shared.Jmap, run func() shared.OperationResult, cancel func() error, ws shared.OperationSocket) (string, error) {
+func CreateOperation(metadata shared.Jmap, run func() shared.OperationResult, cancel func() error, ws shared.OperationWebsocket) (string, error) {
 	id := uuid.New()
 	op := shared.Operation{}
 	op.CreatedAt = time.Now()
@@ -34,7 +34,6 @@ func CreateOperation(metadata shared.Jmap, run func() shared.OperationResult, ca
 	op.Run = run
 	op.Cancel = cancel
 	op.Chan = make(chan bool, 1)
-	op.WebsocketConnected = false
 	op.Websocket = ws
 
 	lock.Lock()
@@ -54,12 +53,10 @@ func StartOperation(id string) error {
 	go func(op *shared.Operation) {
 		result := op.Run()
 
+		shared.Debugf("operation %s finished: %s", op.Run, result)
+
 		lock.Lock()
-		op.SetStatusByErr(result.Error)
-		if result.Metadata != nil {
-			op.Metadata = result.Metadata
-		}
-		op.Chan <- true
+		op.SetResult(result)
 		lock.Unlock()
 	}(op)
 
@@ -132,9 +129,8 @@ func operationDelete(d *Daemon, r *http.Request) Response {
 
 	if err != nil {
 		return InternalError(err)
-	} else {
-		return EmptySyncResponse
 	}
+	return EmptySyncResponse
 }
 
 var operationCmd = Command{name: "operations/{id}", get: operationGet, delete: operationDelete}
@@ -183,20 +179,13 @@ func operationWaitGet(d *Daemon, r *http.Request) Response {
 var operationWait = Command{name: "operations/{id}/wait", get: operationWaitGet}
 
 type websocketServe struct {
-	req *http.Request
-	ws  shared.OperationSocket
+	req    *http.Request
+	secret string
+	op     *shared.Operation
 }
 
 func (r *websocketServe) Render(w http.ResponseWriter) error {
-	conn, err := shared.WebsocketUpgrader.Upgrade(w, r.req, nil)
-	if err != nil {
-		return err
-	}
-
-	r.ws.Do(conn)
-	conn.Close()
-
-	return nil
+	return r.op.Websocket.Connect(r.secret, r.req, w)
 }
 
 func operationWebsocketGet(d *Daemon, r *http.Request) Response {
@@ -208,8 +197,7 @@ func operationWebsocketGet(d *Daemon, r *http.Request) Response {
 		return NotFound
 	}
 
-	ws := op.Websocket
-	if ws == nil {
+	if op.Websocket == nil {
 		return BadRequest(fmt.Errorf("operation has no websocket protocol"))
 	}
 
@@ -218,21 +206,11 @@ func operationWebsocketGet(d *Daemon, r *http.Request) Response {
 		return BadRequest(fmt.Errorf("missing secret"))
 	}
 
-	if secret != ws.Secret() {
-		return Forbidden
-	}
-
 	if op.StatusCode.IsFinal() {
 		return BadRequest(fmt.Errorf("status is %s, can't connect", op.Status))
 	}
 
-	if op.WebsocketConnected {
-		return BadRequest(fmt.Errorf("websocket already connected"))
-	}
-
-	op.WebsocketConnected = true
-
-	return &websocketServe{r, ws}
+	return &websocketServe{r, secret, op}
 }
 
-var operationWebsocket = Command{name: "operations/{id}/websocket", get: operationWebsocketGet}
+var operationWebsocket = Command{name: "operations/{id}/websocket", untrustedGet: true, get: operationWebsocketGet}

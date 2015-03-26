@@ -3,9 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/lxc/lxd/internal/gnuflag"
 	"github.com/lxc/lxd/shared"
@@ -31,6 +34,8 @@ func init() {
 		shared.Debugf("Problem finding default group %s", err)
 	}
 	*group = myGroup
+
+	rand.Seed(time.Now().UTC().UnixNano())
 }
 
 func run() error {
@@ -58,10 +63,24 @@ func run() error {
 		shared.SetDebug(*debug)
 	}
 
+	needed_programs := []string{"setfacl", "rsync", "tar", "xz"}
+	for _, p := range needed_programs {
+		_, err := exec.LookPath(p)
+		if err != nil {
+			return err
+		}
+	}
+
 	d, err := StartDaemon(*listenAddr)
+
 	if err != nil {
+		if d != nil && d.db != nil {
+			d.db.Close()
+		}
 		return err
 	}
+
+	defer d.db.Close()
 
 	ch := make(chan os.Signal)
 	signal.Notify(ch, syscall.SIGINT)

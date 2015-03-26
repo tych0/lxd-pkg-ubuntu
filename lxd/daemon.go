@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
+	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 
 	"github.com/gorilla/mux"
+	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
+	_ "github.com/stgraber/lxd-go-sqlite3"
 	"gopkg.in/tomb.v2"
 )
 
@@ -21,12 +22,15 @@ type Daemon struct {
 	tomb        tomb.Tomb
 	unixl       net.Listener
 	tcpl        net.Listener
-	id_map      *Idmap
+	idMap       *shared.Idmap
 	lxcpath     string
 	certf       string
 	keyf        string
 	mux         *mux.Router
 	clientCerts map[string]x509.Certificate
+	db          *sql.DB
+
+	tlsconfig *tls.Config
 }
 
 type Command struct {
@@ -39,6 +43,86 @@ type Command struct {
 	delete        func(d *Daemon, r *http.Request) Response
 }
 
+func (d *Daemon) httpGetSync(url string) (*lxd.Response, error) {
+	var err error
+	if d.tlsconfig == nil {
+		d.tlsconfig, err = shared.GetTLSConfig(d.certf, d.keyf)
+		if err != nil {
+			return nil, err
+		}
+	}
+	tr := &http.Transport{
+		TLSClientConfig: d.tlsconfig,
+		Dial:            shared.RFC3493Dialer,
+	}
+	myhttp := http.Client{
+		Transport: tr,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", shared.UserAgent)
+
+	r, err := myhttp.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := lxd.ParseResponse(r)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Type != lxd.Sync {
+		return nil, fmt.Errorf("unexpected non-sync response!")
+	}
+
+	return resp, nil
+}
+
+func (d *Daemon) httpGetFile(url string) (*http.Response, error) {
+	var err error
+	if d.tlsconfig == nil {
+		d.tlsconfig, err = shared.GetTLSConfig(d.certf, d.keyf)
+		if err != nil {
+			return nil, err
+		}
+	}
+	tr := &http.Transport{
+		TLSClientConfig: d.tlsconfig,
+		Dial:            shared.RFC3493Dialer,
+	}
+	myhttp := http.Client{
+		Transport: tr,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", shared.UserAgent)
+
+	raw, err := myhttp.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if raw.StatusCode != 200 {
+		_, err := lxd.HoistResponse(raw, lxd.Error)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("non-200 status with no error response?")
+	}
+
+	return raw, nil
+}
+
 func readMyCert() (string, string, error) {
 	certf := shared.VarPath("server.crt")
 	keyf := shared.VarPath("server.key")
@@ -47,33 +131,6 @@ func readMyCert() (string, string, error) {
 	err := shared.FindOrGenCert(certf, keyf)
 
 	return certf, keyf, err
-}
-
-func readSavedClientCAList(d *Daemon) {
-	dirpath := shared.VarPath("clientcerts")
-	d.clientCerts = make(map[string]x509.Certificate)
-	fil, err := ioutil.ReadDir(dirpath)
-	if err != nil {
-		return
-	}
-	for i := range fil {
-		n := fil[i].Name()
-		fnam := fmt.Sprintf("%s/%s", dirpath, n)
-		cf, err := ioutil.ReadFile(fnam)
-		if err != nil {
-			continue
-		}
-
-		cert_block, _ := pem.Decode(cf)
-
-		cert, err := x509.ParseCertificate(cert_block.Bytes)
-		if err != nil {
-			continue
-		}
-		n, _ = shared.SplitExt(n)
-		d.clientCerts[n] = *cert
-		shared.Debugf("Loaded cert %s", fnam)
-	}
 }
 
 func (d *Daemon) isTrustedClient(r *http.Request) bool {
@@ -168,7 +225,11 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 	d.certf = certf
 	d.keyf = keyf
 
-	// TODO load known client certificates
+	err = initDb(d)
+	if err != nil {
+		return nil, err
+	}
+
 	readSavedClientCAList(d)
 
 	d.mux = mux.NewRouter()
@@ -186,19 +247,36 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 		NotFound.Render(w)
 	})
 
-	d.id_map, err = NewIdmap()
+	d.idMap, err = shared.NewIdmap()
 	if err != nil {
 		shared.Logf("error reading idmap: %s", err.Error())
 		shared.Logf("operations requiring idmap will not be available")
 	} else {
 		shared.Debugf("idmap is %d %d %d %d\n",
-			d.id_map.Uidmin,
-			d.id_map.Uidrange,
-			d.id_map.Gidmin,
-			d.id_map.Gidrange)
+			d.idMap.Uidmin,
+			d.idMap.Uidrange,
+			d.idMap.Gidmin,
+			d.idMap.Gidrange)
 	}
 
 	localSocket := shared.VarPath("unix.socket")
+
+	// If the socket exists, let's try to connect to it and see if there's
+	// a lxd running.
+	if _, err := os.Stat(localSocket); err == nil {
+		c := &lxd.Config{Remotes: map[string]lxd.RemoteConfig{}}
+		_, err := lxd.NewClient(c, "")
+		if err != nil {
+			shared.Debugf("Detected old but dead unix socket, deleting it...")
+			// Connecting failed, so let's delete the socket and
+			// listen on it ourselves.
+			err = os.Remove(localSocket)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	unixAddr, err := net.ResolveUnixAddr("unix", localSocket)
 	if err != nil {
 		return nil, fmt.Errorf("cannot resolve unix socket address: %v", err)
@@ -224,16 +302,13 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 
 	var tcpListen func() error
 	if listenAddr != "" {
-		// Watch out. There's a listener active which must be closed on errors.
-		mycert, err := tls.LoadX509KeyPair(d.certf, d.keyf)
+		config, err := shared.GetTLSConfig(d.certf, d.keyf)
 		if err != nil {
+			d.unixl.Close()
 			return nil, err
 		}
-		config := tls.Config{Certificates: []tls.Certificate{mycert},
-			ClientAuth: tls.RequireAnyClientCert,
-			MinVersion: tls.VersionTLS12,
-			MaxVersion: tls.VersionTLS12}
-		tcpl, err := tls.Listen("tcp", listenAddr, &config)
+
+		tcpl, err := tls.Listen("tcp", listenAddr, config)
 		if err != nil {
 			d.unixl.Close()
 			return nil, fmt.Errorf("cannot listen on unix socket: %v", err)
@@ -258,9 +333,8 @@ func (d *Daemon) CheckTrustState(cert x509.Certificate) bool {
 		if bytes.Compare(cert.Raw, v.Raw) == 0 {
 			shared.Debugf("found cert for %s", k)
 			return true
-		} else {
-			shared.Debugf("client cert != key for %s", k)
 		}
+		shared.Debugf("client cert != key for %s", k)
 	}
 	return false
 }

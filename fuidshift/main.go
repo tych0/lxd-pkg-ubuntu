@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"syscall"
+
+	"github.com/lxc/lxd/shared"
 )
 
 func help(me string, status int) {
@@ -33,10 +33,10 @@ func run() error {
 	}
 
 	directory := os.Args[1]
-	idmap := Idmap{}
+	idmap := shared.IdmapSet{}
 	testmode := false
 
-	for pos := 2; pos < len(os.Args); pos += 1 {
+	for pos := 2; pos < len(os.Args); pos++ {
 
 		switch os.Args[pos] {
 		case "t", "-t", "--test", "test":
@@ -60,54 +60,5 @@ func run() error {
 		os.Exit(1)
 	}
 
-	return Uidshift(directory, idmap, testmode)
-}
-
-func getOwner(path string) (int, int, error) {
-	var stat syscall.Stat_t
-	err := syscall.Lstat(path, &stat)
-	if err != nil {
-		return 0, 0, err
-	}
-	uid := int(stat.Uid)
-	gid := int(stat.Gid)
-	return uid, gid, nil
-}
-
-func fileExists(p string) bool {
-	_, err := os.Lstat(p)
-	if err != nil && os.IsNotExist(err) {
-		return false
-	}
-	return true
-}
-
-func Uidshift(dir string, idmap Idmap, testmode bool) error {
-	convert := func(path string, fi os.FileInfo, err error) (e error) {
-		uid, gid, err := getOwner(path)
-		if err != nil {
-			return err
-		}
-		newuid, newgid := idmap.Shift_into_ns(uid, gid)
-		if testmode {
-			fmt.Printf("I would shift %q to %d %d\n", path, newuid, newgid)
-		} else {
-			err = os.Chown(path, int(newuid), int(newgid))
-			if err == nil {
-				m := fi.Mode()
-				if m&os.ModeSymlink == 0 {
-					err = os.Chmod(path, m)
-					if err != nil {
-						fmt.Printf("Error resetting mode on %q, continuing\n", path)
-					}
-				}
-			}
-		}
-		return nil
-	}
-
-	if !fileExists(dir) {
-		return fmt.Errorf("No such file or directory: %q", dir)
-	}
-	return filepath.Walk(dir, convert)
+	return shared.Uidshift(directory, idmap, testmode)
 }

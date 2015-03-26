@@ -13,9 +13,6 @@ import (
 
 // Config holds settings to be used by a client or daemon.
 type Config struct {
-	// TestOption is used only for testing purposes.
-	TestOption string `yaml:"test-option,omitempty"`
-
 	// DefaultRemote holds the remote daemon name from the Remotes map
 	// that the client should communicate with by default.
 	// If empty it defaults to "local".
@@ -38,23 +35,26 @@ type RemoteConfig struct {
 	Addr string `yaml:"addr"`
 }
 
+var localRemote = RemoteConfig{Addr: "unix:/var/lib/lxd/unix.socket"}
+var defaultRemote = map[string]RemoteConfig{"local": localRemote}
+
 var ConfigDir = "$HOME/.config/lxc"
 var configFileName = "config.yml"
 
-func configPath(file string) string {
+func ConfigPath(file string) string {
 	return os.ExpandEnv(path.Join(ConfigDir, file))
 }
 
 func ServerCertPath(name string) string {
-	return path.Join(configPath("servercerts"), fmt.Sprintf("%s.crt", name))
+	return path.Join(ConfigPath("servercerts"), fmt.Sprintf("%s.crt", name))
 }
 
 // LoadConfig reads the configuration from the config path.
 func LoadConfig() (*Config, error) {
-	data, err := ioutil.ReadFile(configPath(configFileName))
+	data, err := ioutil.ReadFile(ConfigPath(configFileName))
 	if os.IsNotExist(err) {
 		// A missing file is equivalent to the default configuration.
-		return &Config{}, nil
+		return &Config{Remotes: defaultRemote}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config file: %v", err)
@@ -68,12 +68,13 @@ func LoadConfig() (*Config, error) {
 	if c.Remotes == nil {
 		c.Remotes = make(map[string]RemoteConfig)
 	}
+
 	return &c, nil
 }
 
 // SaveConfig writes the provided configuration to the config file.
 func SaveConfig(c *Config) error {
-	fname := configPath(configFileName)
+	fname := ConfigPath(configFileName)
 
 	// Ignore errors on these two calls. Create will report any problems.
 	os.Remove(fname + ".new")
@@ -105,9 +106,8 @@ func (c *Config) ParseRemoteAndContainer(raw string) (string, string) {
 	result := strings.SplitN(raw, ":", 2)
 	if len(result) == 1 {
 		return c.DefaultRemote, result[0]
-	} else {
-		return result[0], result[1]
 	}
+	return result[0], result[1]
 }
 
 func (c *Config) ParseRemote(raw string) string {
