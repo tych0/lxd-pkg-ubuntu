@@ -1,3 +1,10 @@
+lxd (0.5-0ubuntu1) vivid; urgency=medium
+
+  * New upstream release (0.5) (LP: #1425686)
+  * Build on all architectures (using gccgo)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 26 Mar 2015 15:57:40 -0400
+
 lxd (0.1-0ubuntu1) vivid; urgency=medium
 
   * Initial upstream release.
