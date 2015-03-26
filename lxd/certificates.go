@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 
 	"github.com/gorilla/mux"
 	"github.com/lxc/lxd/shared"
@@ -66,23 +65,49 @@ type certificatesPostBody struct {
 	Password    string `json:"password"`
 }
 
-func saveCert(host string, cert *x509.Certificate) error {
-	// TODO - do we need to sanity-check the server name to avoid arbitrary writes to fs?
-	dirname := shared.VarPath("clientcerts")
-	err := os.MkdirAll(dirname, 0755)
-	filename := fmt.Sprintf("%s/%s.crt", dirname, host)
-	certOut, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+func readSavedClientCAList(d *Daemon) {
+	d.clientCerts = make(map[string]x509.Certificate)
+	rows, err := shared.DbQuery(d.db, "SELECT fingerprint, type, name, certificate FROM certificates")
+	if err != nil {
+		shared.Logf("Error reading certificates from database: %s\n", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fp string
+		var t int
+		var name string
+		var cf []byte
+		rows.Scan(&fp, &t, &name, &cf)
+		cert_block, _ := pem.Decode(cf)
+		cert, err := x509.ParseCertificate(cert_block.Bytes)
+		if err != nil {
+			shared.Logf("Error reading certificate for %s: %s\n", name, err)
+			continue
+		}
+		d.clientCerts[name] = *cert
+	}
+}
+
+func saveCert(d *Daemon, host string, cert *x509.Certificate) error {
+	tx, err := d.db.Begin()
 	if err != nil {
 		return err
 	}
-	defer certOut.Close()
-
-	err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	fingerprint := shared.GenerateFingerprint(cert)
+	stmt, err := tx.Prepare("INSERT INTO certificates (fingerprint,type,name,certificate) VALUES (?, ?, ?, ?)")
 	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(fingerprint, 1, host, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+	if err != nil {
+		tx.Rollback()
 		return err
 	}
 
-	return nil
+	return shared.TxCommit(tx)
 }
 
 func certificatesPost(d *Daemon, r *http.Request) Response {
@@ -121,9 +146,8 @@ func certificatesPost(d *Daemon, r *http.Request) Response {
 		if name == existingName {
 			if fingerprint == shared.GenerateFingerprint(&existingCert) {
 				return EmptySyncResponse
-			} else {
-				return Conflict
 			}
+			return Conflict
 		}
 	}
 
@@ -131,7 +155,7 @@ func certificatesPost(d *Daemon, r *http.Request) Response {
 		return Forbidden
 	}
 
-	err := saveCert(name, cert)
+	err := saveCert(d, name, cert)
 	if err != nil {
 		return InternalError(err)
 	}
@@ -162,13 +186,11 @@ func certificateFingerprintDelete(d *Daemon, r *http.Request) Response {
 	for name, cert := range d.clientCerts {
 		if fingerprint == shared.GenerateFingerprint(&cert) {
 			delete(d.clientCerts, name)
-			fpath := path.Join(shared.VarPath("clientcerts"), fmt.Sprintf("%s.crt", name))
-			err := os.Remove(fpath)
+			_, err := shared.DbExec(d.db, "DELETE FROM certificates WHERE name=?", name)
 			if err != nil {
 				return SmartError(err)
-			} else {
-				return EmptySyncResponse
 			}
+			return EmptySyncResponse
 		}
 	}
 

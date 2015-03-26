@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 
 	"github.com/gosexy/gettext"
@@ -20,7 +22,7 @@ func (c *remoteCmd) showByDefault() bool {
 
 func (c *remoteCmd) usage() string {
 	return gettext.Gettext(
-		"Manage remote lxc servers.\n" +
+		"Manage remote LXD servers.\n" +
 			"\n" +
 			"lxc remote add <name> <url>        Add the remote <name> at <url>.\n" +
 			"lxc remote remove <name>           Remove the remote <name>.\n" +
@@ -33,14 +35,83 @@ func (c *remoteCmd) usage() string {
 
 func (c *remoteCmd) flags() {}
 
-func addServer(config *lxd.Config, server string) error {
+func addServer(config *lxd.Config, server string, addr string) error {
+	var r_scheme string
+	var r_host string
+	var r_port string
+
+	remote_url, err := url.Parse(addr)
+	if err != nil {
+		return err
+	}
+
+	if remote_url.Scheme != "" {
+		if remote_url.Scheme != "unix" && remote_url.Scheme != "https" {
+			r_scheme = "https"
+		} else {
+			r_scheme = remote_url.Scheme
+		}
+	} else if addr[0] == '/' {
+		r_scheme = "unix"
+	} else {
+		_, err := os.Stat(addr)
+		if err != nil && os.IsNotExist(err) {
+			r_scheme = "https"
+		} else {
+			r_scheme = "unix"
+		}
+	}
+
+	if remote_url.Host != "" {
+		r_host = remote_url.Host
+	} else {
+		r_host = addr
+	}
+
+	host, port, err := net.SplitHostPort(r_host)
+	if err == nil {
+		r_host = host
+		r_port = port
+	} else {
+		r_port = "8443"
+	}
+
+	if r_scheme == "unix" {
+		if addr[0:5] == "unix:" {
+			if addr[0:7] == "unix://" {
+				r_host = addr[8:]
+			} else {
+				r_host = addr[6:]
+			}
+		}
+		r_port = ""
+	}
+
+	if r_port != "" {
+		addr = r_scheme + "://" + r_host + ":" + r_port
+	} else {
+		addr = r_scheme + "://" + r_host
+	}
+
+	if config.Remotes == nil {
+		config.Remotes = make(map[string]lxd.RemoteConfig)
+	}
+
+	config.Remotes[server] = lxd.RemoteConfig{Addr: addr}
+
 	remote := config.ParseRemote(server)
 	c, err := lxd.NewClient(config, remote)
 	if err != nil {
 		return err
 	}
 
-	err = c.UserAuthServerCert()
+	if len(addr) > 5 && addr[0:5] == "unix:" {
+		// NewClient succeeded so there was a lxd there (we fingered
+		// it) so just accept it
+		return nil
+	}
+
+	err = c.UserAuthServerCert(host)
 	if err != nil {
 		return err
 	}
@@ -97,12 +168,7 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 			return fmt.Errorf(gettext.Gettext("remote %s exists as <%s>"), args[1], rc.Addr)
 		}
 
-		if config.Remotes == nil {
-			config.Remotes = make(map[string]lxd.RemoteConfig)
-		}
-		config.Remotes[args[1]] = lxd.RemoteConfig{Addr: args[2]}
-
-		err := addServer(config, args[1])
+		err := addServer(config, args[1], args[2])
 		if err != nil {
 			delete(config.Remotes, args[1])
 			return err

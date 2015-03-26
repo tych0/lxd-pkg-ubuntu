@@ -1,7 +1,4 @@
 *.swp
-
-lxd/lxd
-lxc/lxc
-fuidshift/fuidshift
-
+po/*.mo
+po/*.po~
 lxd-*.tar.gz

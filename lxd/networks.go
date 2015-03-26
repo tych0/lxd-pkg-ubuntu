@@ -23,7 +23,7 @@ func networksGet(d *Daemon, r *http.Request) Response {
 		return InternalError(err)
 	}
 
-	result := make([]string, 0)
+	var result []string
 	for _, iface := range ifs {
 		result = append(result, fmt.Sprintf("/%s/networks/%s", shared.APIVersion, iface.Name))
 	}
@@ -52,7 +52,7 @@ func isBridge(iface string) bool {
 func children(iface string) []string {
 	p := path.Join(SYS_CLASS_NET, iface, "brif")
 
-	ret := make([]string, 0)
+	var ret []string
 
 	ents, err := ioutil.ReadDir(p)
 	if err != nil {
@@ -100,12 +100,12 @@ func networkGet(d *Daemon, r *http.Request) Response {
 	} else if isBridge(n.Name) {
 		n.Type = "bridge"
 		for _, ct := range lxc.ActiveContainerNames(d.lxcpath) {
-			c, err := lxc.NewContainer(ct, d.lxcpath)
+			c, err := newLxdContainer(ct, d)
 			if err != nil {
 				return InternalError(err)
 			}
 
-			if isOnBridge(c, n.Name) {
+			if isOnBridge(c.c, n.Name) {
 				n.Members = append(n.Members, ct)
 			}
 		}

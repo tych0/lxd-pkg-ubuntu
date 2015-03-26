@@ -1,31 +1,50 @@
-# lxd [![Build Status](https://travis-ci.org/lxc/lxd.svg?branch=master)](https://travis-ci.org/lxc/lxd)
+# LXD [![Build Status](https://travis-ci.org/lxc/lxd.svg?branch=master)](https://travis-ci.org/lxc/lxd)
 
 REST API, command line tool and OpenStack integration plugin for LXC.
 
 LXD is pronounced lex-dee.
 
-## Installing the dependencies
+## Getting started with LXD
+
+Since LXD development is happening at such a rapid pace, we only provide daily
+builds right now. They're available via:
+
+    sudo add-apt-repository ppa:ubuntu-lxc/lxd-daily && sudo apt-get update
+    sudo apt-get install lxd
+
+After you've got LXD installed, you can take your [first steps](#first-steps).
+
+## Building from source
 
 We have exeperienced some problems using gccgo, so for now we recommend using
-the golang compiler. We also require that a 1.0+ version of lxc and lxc-dev be
+the golang compiler. We also require that a 1.1+ version of lxc and lxc-dev be
 installed. Additionally, some of LXD's dependencies are grabbed from `go get`
 via mercurial, so you'll need to have `hg` in your path as well. You can get
 these on Ubuntu via:
 
-    sudo apt-get install lxc lxc-dev mercurial git pkg-config
-        
-## Installing Go
+    sudo apt-get install lxc lxc-dev mercurial git pkg-config protobuf-compiler golang-goprotobuf-dev
+
+### Installing Go
 
 LXD requires Golang 1.3 or later to work.
 
-If running Ubuntu, the easiest way to get it is to use the lxc PPA:
+If running Ubuntu, the easiest way to get it is to use the LXC PPA:
 
     sudo apt-get install software-properties-common
     sudo add-apt-repository ppa:ubuntu-lxc/lxd-daily
     sudo apt-get update
     sudo apt-get install golang
 
-## Building the tools
+In order to be able to extract images and create containers, a few more
+dependencies are xz, tar, and setfacl:
+
+    sudo apt-get install xz-utils tar acl
+
+To run the testsuite, you'll also need:
+
+    sudo apt-get install curl gettext jq sqlite3
+
+### Building the tools
 
 LXD consists of two binaries, a client called `lxc` and a server called `lxd`.
 These live in the source tree in the `lxc/` and `lxd/` dirs, respectively. To
@@ -41,28 +60,36 @@ And then download it as usual:
     go get -v -d ./...
     make
 
-And you should have two binaries, one at `/lxc/lxc`, and one at `/lxd/lxd`.
+...which will give you two binaries in $GOPATH/bin, `lxd` the daemon binary,
+and `lxc` a command line client to that daemon.
 
-## Running
+### Machine Setup
 
-Right now lxd uses a hardcoded path for all its containers. This will change in
-the future, but for now you need to let the user running lxd own /var/lib/lxd:
+You'll need sub{u,g}ids for root, so that LXD can create the unprivileged
+containers:
 
-    sudo mkdir -p /var/lib/lxd
-    sudo chown $USER:$USER /var/lib/lxd
+    echo "root:1000000:65536" | sudo tee -a /etc/subuid /etc/subgid
 
-You'll also need sub{u,g}ids for the user that lxd is going to run as:
+Now you can run the daemon (the --group admin bit allows everyone in the admin
+group to talk to LXD; you can create your own group if you want, but typically
+all sudo users are in the admin group, so this is a handy way to allow them to
+talk to LXD):
 
-    echo "$USER:1000000:65536" | sudo tee -a /etc/subuid /etc/subgid
+    sudo -E $GOPATH/bin/lxd --group admin
 
-Now you can run the daemon:
+## First steps
 
-    ./lxd/lxd &
+LXD has two parts, the daemon (the `lxd` binary), and the client (the `lxc`
+binary). Now that the daemon is all configured and running (either via the
+packaging or via the from-source instructions above), you can import some images:
 
-And connect to it via lxc:
+    scripts/lxd-images import lxc ubuntu trusty amd64 --alias ubuntu --alias ubuntu/trusty --alias ubuntu/trusty/amd64
+    scripts/lxd-images import lxc debian wheezy amd64 --alias debian --alias debian/wheezy --alias debian/wheezy/amd64
 
-    ./lxc/lxc create foo
-    ./lxc/lxc start foo
+With those two images imported into LXD, you can now start containers:
+
+    lxc launch ubuntu
+    lxc launch debian debian01
 
 ## Bug reports
 

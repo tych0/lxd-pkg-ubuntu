@@ -66,6 +66,21 @@ func run() error {
 		return err
 	}
 
+	certf := lxd.ConfigPath("client.crt")
+	keyf := lxd.ConfigPath("client.key")
+
+	_, err = os.Stat(certf)
+	_, err2 := os.Stat(keyf)
+
+	if err != nil || err2 != nil {
+		fmt.Fprintf(os.Stderr, gettext.Gettext("Generating a client certificate. This may take a minute...\n"))
+
+		err = shared.FindOrGenCert(certf, keyf)
+		if err != nil {
+			return err
+		}
+	}
+
 	err = cmd.run(config, gnuflag.Args())
 	if err == errArgs {
 		fmt.Fprintf(os.Stderr, gettext.Gettext("error: %v\n%s"), err, cmd.usage())
@@ -83,14 +98,18 @@ type command interface {
 
 var commands = map[string]command{
 	"config":   &configCmd{},
+	"copy":     &copyCmd{},
 	"delete":   &deleteCmd{},
 	"exec":     &execCmd{},
 	"file":     &fileCmd{},
 	"finger":   &fingerCmd{},
 	"help":     &helpCmd{},
+	"image":    &imageCmd{},
+	"info":     &infoCmd{},
 	"init":     &initCmd{},
 	"launch":   &launchCmd{},
 	"list":     &listCmd{},
+	"move":     &moveCmd{},
 	"remote":   &remoteCmd{},
 	"restart":  &actionCmd{shared.Restart, true},
 	"snapshot": &snapshotCmd{},

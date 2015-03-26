@@ -1,5 +1,5 @@
 # Introduction
-All the communications between lxd and its clients happen using a
+All the communications between LXD and its clients happen using a
 RESTful API over http which is then encapsulated over either SSL for
 remote operations or a unix socket for local operations.
 
@@ -53,11 +53,7 @@ The body is a dict with the following structure:
         'resources': {
             'containers': ["/1.0/containers/my-container"]      # List of affected resources
         },
-        'metadata': {                                           # Metadata relevant to the operation
-            'websocket_secret': 'theparadiserocks'              # The secret string used to connect to a websocket.
-                                                                # This is optional, depending on whether or not
-                                                                # the operation has a websocket you can connect to.
-        }
+        'metadata': {}                                          # Metadata relevant to the operation
     }
 
 The body is mostly provided as a user friendly way of seeing what's
@@ -129,7 +125,7 @@ The update will then only be done if the two match.
 If they don't, an error will be returned instead using HTTP error code
 412 (Precondition failed).
 
-For consistency in lxc's use of hashes, the Etag hash should be a SHA-256.
+For consistency in LXD's use of hashes, the Etag hash should be a SHA-256.
 
 # API structure
  * /
@@ -143,7 +139,10 @@ For consistency in lxc's use of hashes, the Etag hash should be a SHA-256.
          * /1.0/containers/\<name\>/state
      * /1.0/events
      * /1.0/images
-       * /1.0/images/\<name\>
+       * /1.0/images/\<fingerprint\>
+         * /1.0/images/\<fingerprint\>/export
+       * /1.0/images/aliases
+         * /1.0/images/aliases/\<name\>
      * /1.0/networks
        * /1.0/networks/\<name\>
      * /1.0/operations
@@ -173,10 +172,9 @@ For consistency in lxc's use of hashes, the Etag hash should be a SHA-256.
 Return value (if trusted):
 
     {
-        'auth': "trusted"      ,                        # Authentication state, one of "guest", "untrusted" or "trusted"
+        'auth': "trusted",                              # Authentication state, one of "guest", "untrusted" or "trusted"
         'api_compat': 0,                                # Used to determine API functionality
-        'config': [{'key': "trust-password",            # Host configuration
-                    'value': True}],                    # In the case of passwords, their value is returned as True if set
+        'config': {"trust-password": True},             # Host configuration
         'environment': {'kernel_version': "3.16",       # Various information about the host (OS, kernel, ...)
                         'lxc_version': "1.0.6",
                         'driver': "lxc",
@@ -199,8 +197,7 @@ Return value (if guest or untrusted):
 Input:
 
     {
-        'config': [{'key': "trust-password",
-                    'value': "my-new-password"}]
+        'config': {"trust-password": "my-new-password"}
     }
 
 ## /1.0/containers
@@ -216,7 +213,7 @@ Input:
  * Operation: async
  * Return: background operation or standard error
 
-Input (container based on remote image):
+Input (container based on a local image with the "ubuntu/devel" alias):
 
     {
         'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
@@ -225,22 +222,101 @@ Input (container based on remote image):
         'profiles': ["default"],                                            # List of profiles
         'ephemeral': True,                                                  # Whether to destroy the container on shutdown
         'config': {'resources.cpus': "2"},                                  # Config override.
-        'source': {'type': "remote",                                        # Can be: local (source is a local image, container or snapshot), remote (requires a provided remote config) or proxy (requires a provided ssl socket info)
-                   'url': 'https+lxc-images://images.linuxcontainers.org",  # URL for the remote
-                   'name': "lxc-images/ubuntu/trusty/amd64",                # Name of the image or container on the remote
-                   'metadata': {'gpg_key': "GPG KEY BASE64"}},              # Metadata to setup the remote
+        'source': {'type': "image",                                         # Can be: "image", "migration" or "none"
+                   'alias': "ubuntu/devel"},                                # Name of the alias
     }
 
-Input (clone of a local snapshot):
+Input (container based on a local image identified by its fingerprint):
 
     {
-        'name': "my-new-container",
+        'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
         'hostname': "my-container",
-        'profiles': ["default"],
-        'source': {'type': "local",
-                   'name': "a/b"},                                          # Use snapshot "b" of container "a" as the source
-        'userdata': "BASE64 of userdata"                                    # Userdata exposed over /dev/lxd and used by cloud-init or equivalent tools
+        'profiles': ["default"],                                            # List of profiles
+        'ephemeral': True,                                                  # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                  # Config override.
+        'source': {'type': "image",                                         # Can be: "image", "migration" or "none"
+                   'fingerprint': "SHA-256"},                               # Fingerprint
     }
+
+Input (container based on most recent match based on image properties):
+
+    {
+        'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
+        'hostname': "my-container",
+        'profiles': ["default"],                                            # List of profiles
+        'ephemeral': True,                                                  # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                  # Config override.
+        'source': {'type': "image",                                         # Can be: "image", "migration" or "none"
+                   'properties': {                                          # Properties
+                        'os': "ubuntu",
+                        'release': "14.04",
+                        'architecture': "x86_64"
+                    }},
+    }
+
+Input (container without a pre-populated rootfs, useful when attaching to an existing one):
+
+    {
+        'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
+        'hostname': "my-container",
+        'profiles': ["default"],                                            # List of profiles
+        'ephemeral': True,                                                  # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                  # Config override.
+        'source': {'type': "none"},                                         # Can be: "image", "migration" or "none"
+    }
+
+Input (using a public remote image):
+
+    {
+        'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
+        'hostname': "my-container",
+        'profiles': ["default"],                                            # List of profiles
+        'ephemeral': True,                                                  # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                  # Config override.
+        'source': {'type': "image",                                         # Can be: "image", "migration" or "none"
+                   'mode': "pull",                                          # One of "local" (default), "pull" or "receive"
+                   'server': "https://10.0.2.3:8443",                       # Remote server (pull mode only)
+                   'alias': "ubuntu/devel"},                                # Name of the alias
+    }
+
+
+Input (using a private remote image after having obtained a secret for that image):
+
+    {
+        'name': "my-new-container",                                         # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
+        'hostname': "my-container",
+        'profiles': ["default"],                                            # List of profiles
+        'ephemeral': True,                                                  # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                  # Config override.
+        'source': {'type': "image",                                         # Can be: "image", "migration" or "none"
+                   'mode': "pull",                                          # One of "local" (default), "pull" or "receive"
+                   'server': "https://10.0.2.3:8443",                       # Remote server (pull mode only)
+                   'secret': "my-secret-string",                            # Secret to use to retrieve the image (pull mode only)
+                   'alias': "ubuntu/devel"},                                # Name of the alias
+    }
+
+Input (using a remote container, sent over the migration websocket):
+
+    {
+        'name': "my-new-container",                                                     # 64 chars max, ASCII, no slash, no colon and no comma
+        'architecture': "x86_64",
+        'hostname': "my-container",
+        'profiles': ["default"],                                                        # List of profiles
+        'ephemeral': True,                                                              # Whether to destroy the container on shutdown
+        'config': {'resources.cpus': "2"},                                              # Config override.
+        'source': {'type': "migration",                                                 # Can be: "image", "migration" or "none"
+                   'mode': "pull",                                                      # One of "pull" or "receive"
+                   'operation': "https://10.0.2.3:8443/1.0/operations/<UUID>",          # Full URL to the remote operation (pull mode only)
+                   'secrets': {'control': "my-secret-string",                           # Secrets to use when talking to the migration source
+                               'criu':    "my-other-secret",
+                               'fs':      "my third secret"},
+    }
+
 
 
 ## /1.0/containers/\<name\>
@@ -279,16 +355,22 @@ Output:
 
 
 ### PUT
- * Description: update container configuration
+ * Description: update container configuration or restore snapshot
  * Authentication: trusted
  * Operation: async
  * Return: background operation or standard error
 
-Input:
+Input (update container configuration):
 
 Takes the same structure as that returned by GET but doesn't allow name
 changes (see POST below) or changes to the status sub-dict (since that's
 read-only).
+
+Input (restore snapshot):
+
+    {
+        'restore': "snapshot-name"
+    }
 
 ### POST
  * Description: used to rename/migrate the container
@@ -296,17 +378,32 @@ read-only).
  * Operation: async
  * Return: background operation or standard error
 
+Renaming to an existing name must return the 409 (Conflict) HTTP code.
+
 Input (simple rename):
 
     {
         'name': "new-name"
     }
 
+Input (migration across lxd instances):
+    {
+        "migration": true,
+        "name": "new-name"
+    }
 
-Renaming to an existing name must return the 409 (Conflict) HTTP code.
+The migration does not actually start until someone (i.e. another lxd instance)
+connects to all the websockets and begins negotiation with the source.
 
-TODO: Cross host rename/migration.
+Output in metadata section (for migration):
 
+    {
+        "control": "secret1",
+        "criu": "secret2",
+        "fs": "secret3",
+    }
+
+These are the secrets that should be passed to the create call.
 
 ### DELETE
  * Description: remove the container
@@ -361,11 +458,11 @@ The following headers will be set (on top of standard size and mimetype headers)
 
 This is designed to be easily usable from the command line or even a web browser.
 
-### PUT
+### POST
  * Description: upload a file to the container
  * Authentication: trusted
  * Operation: sync
- * Return: standard return value  or standard error
+ * Return: standard return value or standard error
 
 Input:
  * Standard http file upload
@@ -448,20 +545,49 @@ HTTP code for this should be 202 (Accepted).
 Input (run bash):
 
     {
-        'command': ["/bin/bash"],
-        'wait-for-websocket': false
+        'command': ["/bin/bash"],       # Command and arguments
+        'environment': {},              # Optional extra environment variables to set
+        'wait-for-websocket': false,    # Whether to wait for a connection before starting the process
+        'interactive': true             # Whether to allocate a pts device instead of PIPEs
     }
 
 `wait-for-websocket` indicates whether the operation should block and wait for
 a websocket connection to start (so that users can pass stdin and read
 stdout), or simply run to completion with /dev/null as stdin and stdout.
 
-When the exec command finishes, its exit status is avaialabe from the
+When the exec command finishes, its exit status is available from the
 operation's metadata:
 
     {
         'return': 0
     }
+
+If interactive is set to true, a single websocket is returned and is mapped to a
+pts device for stdin, stdout and stderr of the execed process.
+
+If interactive is set to false (default), three pipes will be setup, one
+for each of stdin, stdout and stderr.
+
+Depending on the state of the interactive flag, one or three different
+websocket/secret pairs will be returned, which are valid for connecting to this
+operations /websocket endpoint.
+
+Response metadata (interactive=true); the output of the pty is mirrored over
+this websocket:
+
+    {
+        "-1": "secret"
+    }
+
+Response metadata (interactive=false); each of the process' fds are hooked up
+to these (i.e. you can only write to 0, and read from 1 and 2):
+
+    {
+        "0": "secret0",
+        "1": "secret1",
+        "2": "secret2",
+    }
+
 
 ## /1.0/events
 This URL isn't a real REST API endpoint, instead doing a GET query on it
@@ -499,30 +625,72 @@ This never returns. Each notification is sent as a separate JSON dict:
 
 
 ## /1.0/images
-### GET
+### GET (?key=value&key1=value1...)
  * Description: list of images (public or private)
  * Authentication: guest or trusted
  * Operation: sync
  * Return: list of URLs for images this server publishes
 
-### PUT
+Filtering can be done by specifying a list of key and values in the
+query URL.
+
+### POST
  * Description: create and publish a new image
  * Authentication: trusted
  * Operation: async
  * Return: background operation or standard error
 
-Input:
+Input (one of):
+ * Standard http file upload
+ * Soure container dictionary
 
-TODO: examples
+In the http file upload case, The following headers may be set by the client:
+ * X-LXD-fingerprint: SHA-256 (if set, uploaded file must match)
+ * X-LXD-filename: FILENAME (used for export)
+ * X-LXD-public: true/false (defaults to false)
+ * X-LXD-properties: URL-encoded key value pairs without duplicate keys (optional properties)
 
-## /1.0/images/\<name\>
+In the source container case, the following dict must be passed:
+
+    {
+        "public": true,             # True or False
+        "source": {
+            "type": "container",    # One of "container" or "snapshot"
+            "name": "abc"
+        },
+        "properties": {             # Image properties
+            "os": "Ubuntu",
+        }
+    }
+
+
+After the input is received by LXD, a background operation is started
+which will add the image to the store and possibly do some backend
+filesystem-specific optimizations.
+
+## /1.0/images/\<fingerprint\>
 ### GET
  * Description: Image description and metadata
- * Authentication: trusted
+ * Authentication: guest or trusted
  * Operation: sync
- * Return: dict representing an image description and metadata
+ * Return: dict representing an image properties
 
-TODO: examples
+Output:
+
+    {
+        'aliases': ['alias1', ...],
+        'architecture': 0,
+        'fingerprint': "a3625aeada09576673620d1d048eed7ac101c4c2409f527a1f77e237fa280e32",
+        'filename': "busybox-amd64.tar.xz",
+        'properties': {
+            'key': 'value'
+        },
+        'public': true,
+        'size': 11031704,
+        'created_at': 1415639996,
+        'expires_at': 1415639996,
+        'uploaded_at': 1415639996
+    }
 
 ### DELETE
  * Description: Remove an image
@@ -538,7 +706,7 @@ Input (none at present):
 HTTP code for this should be 202 (Accepted).
 
 ### PUT
- * Description: Updates the image metadata
+ * Description: Updates the image properties
  * Authentication: trusted
  * Operation: sync
  * Return: standard return value or standard error
@@ -562,6 +730,112 @@ Input (rename an image):
 Renaming to an existing name must return the 409 (Conflict) HTTP code.
 
 TODO: move to remote host
+
+## /1.0/images/\<fingerprint\>/export
+### GET (optional secret=SECRET)
+ * Description: Download the image tarball
+ * Authentication: guest or trusted
+ * Operation: sync
+ * Return: Raw file or standard error
+
+The secret string is required when an untrusted LXD is spawning a new
+container from a private image stored on a different LXD.
+
+Rather than require a trust relationship between the two LXDs, the
+client will POST to /1.0/images/\<fingerprint\>/export to get a secret
+token which it'll then pass to the target LXD. That target LXD will then
+GET the image as a guest, passing the secret token.
+
+### POST
+ * Description: Generate a random token and tell LXD to expect it be used by a guest
+ * Authentication: guest or trusted
+ * Operation: async
+ * Return: background operation or standard error
+
+Input:
+
+    {
+    }
+
+Output:
+
+Standard backround operation with "secret" set to the generated secret
+string in metadata.
+
+The secret can only be used once. The operation will then complete and
+the secret will no longer be valid.
+
+## /1.0/images/aliases
+### GET
+ * Description: list of aliases (public or private based on image visibility)
+ * Authentication: guest or trusted
+ * Operation: sync
+ * Return: list of URLs for aliases this server knows about
+
+### POST
+ * Description: create a new alias
+ * Authentication: trusted
+ * Operation: sync
+ * Return: standard return value or standard error
+
+Input:
+
+    {
+        'description': "The alias description",
+        'target': "SHA-256",
+        'name': "alias-name"
+    }
+
+## /1.0/images/aliases/\<name\>
+### GET
+ * Description: Alias description and target
+ * Authentication: guest or trusted
+ * Operation: sync
+ * Return: dict representing an alias description and target
+
+Output:
+    {
+        'description': "The alias description",
+        'target': "SHA-256"
+    }
+
+### PUT
+ * Description: Updates the alias target or description
+ * Authentication: trusted
+ * Operation: sync
+ * Return: standard return value or standard error
+
+Input:
+
+    {
+        'description': "New description",
+        'target': "SHA-256"
+    }
+
+### POST
+ * Description: rename an alias
+ * Authentication: trusted
+ * Operation: sync
+ * Return: standard return value or standard error
+
+Input:
+
+    {
+        'name': "new-name"
+    }
+
+Renaming to an existing name must return the 409 (Conflict) HTTP code.
+
+### DELETE
+ * Description: Remove an alias
+ * Authentication: trusted
+ * Operation: sync
+ * Return: standard return value or standard error
+
+Input (none at present):
+
+    {
+    }
 
 ## /1.0/networks
 ### GET
@@ -653,8 +927,9 @@ Input (wait for the operation to succeed or timeout): ?status\_code=200&timeout=
    stdin/stdout/stderr to flow to and from the process inside the container.
    In the case of migration, it will be the primary interface over which the
    migration information is communicated. The secret here is the one that was
-   provided when the operation was created.
- * Authentication: trusted
+   provided when the operation was created. Guests are allowed to connect
+   provided they have the right secret.
+ * Authentication: guest or trusted
  * Operation: sync
  * Return: websocket stream or standard error
 
@@ -665,7 +940,7 @@ Input (wait for the operation to succeed or timeout): ?status\_code=200&timeout=
  * Operation: sync
  * Return: list of URLs to defined profiles
 
-### PUT
+### POST
  * Description: define a new profile
  * Authentication: trusted
  * Operation: sync
@@ -675,10 +950,8 @@ Input:
 
     {
         'name': "my-profile'name",
-        'config': [{'key': "resources.memory",
-                    'value': "2GB"},
-                   {'key': "network.0.bridge",
-                    'value': "lxcbr0"}]
+        'config': {"resources.memory": "2GB"},
+                   "network.0.bridge": "lxcbr0"}
     }
 
 ## /1.0/profiles/\<name\>
@@ -692,10 +965,8 @@ Output:
 
     {
         'name': "my-profile'name",
-        'config': [{'key': "resources.memory",
-                    'value': "2GB"},
-                   {'key': "network.0.bridge",
-                    'value': "lxcbr0"}]
+        'config': {"resources.memory": "2GB"},
+                   "network.0.bridge": "lxcbr0"}
     }
 
 ### PUT
