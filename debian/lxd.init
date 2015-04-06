@@ -29,7 +29,7 @@ case "$1" in
         fi
 
         echo -n "Starting $DESC: "
-        if start-stop-daemon ${START} -- --group lxd >/dev/null 2>&1 ; then
+        if start-stop-daemon ${START} -- --group lxd --tcp [::]:8443 >/dev/null 2>&1 ; then
             echo "${NAME}."
         else
             if start-stop-daemon --test ${START} >/dev/null 2>&1; then
