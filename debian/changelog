@@ -1,3 +1,9 @@
+lxd (0.9-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.9)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 12 May 2015 19:14:59 -0400
+
 lxd (0.7-0ubuntu1) vivid; urgency=medium
 
   * New upstream release (0.7) (LP: #1425686)
