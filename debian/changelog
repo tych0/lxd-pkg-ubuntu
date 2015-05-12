@@ -1,0 +1,42 @@
+lxd (0.7-0ubuntu1) vivid; urgency=medium
+
+  * New upstream release (0.7) (LP: #1425686)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 14 Apr 2015 23:54:16 -0500
+
+lxd (0.6-0ubuntu1) vivid; urgency=medium
+
+  * New upstream release (0.6) (LP: #1425686)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 07 Apr 2015 18:08:32 -0400
+
+lxd (0.5-0ubuntu4) vivid; urgency=medium
+
+  * Fix debian/compat
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Mon, 06 Apr 2015 20:33:06 -0400
+
+lxd (0.5-0ubuntu3) vivid; urgency=medium
+
+  * Bind to port 8443 by default (needed for remote management).
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Mon, 06 Apr 2015 19:57:46 -0400
+
+lxd (0.5-0ubuntu2) vivid; urgency=medium
+
+  * Cherry-pick powerpc fix from upstream.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 26 Mar 2015 16:55:15 -0400
+
+lxd (0.5-0ubuntu1) vivid; urgency=medium
+
+  * New upstream release (0.5) (LP: #1425686)
+  * Build on all architectures (using gccgo)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 26 Mar 2015 15:57:40 -0400
+
+lxd (0.1-0ubuntu1) vivid; urgency=medium
+
+  * Initial upstream release.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 13 Feb 2015 16:32:33 -0500
