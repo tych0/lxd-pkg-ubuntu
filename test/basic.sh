@@ -1,5 +1,5 @@
 test_basic_usage() {
-  if ! lxc image alias list | grep -q ^testimage$; then
+  if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
     if [ -e "$LXD_TEST_IMAGE" ]; then
         lxc image import $LXD_TEST_IMAGE --alias testimage
     else
@@ -33,6 +33,7 @@ test_basic_usage() {
   # Test container creation
   lxc init testimage foo
   lxc list | grep foo | grep STOPPED
+  lxc list fo | grep foo | grep STOPPED
 
   # Test container rename
   lxc move foo bar

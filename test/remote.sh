@@ -28,13 +28,13 @@ test_remote_url() {
 
 test_remote_admin() {
   bad=0
-  (echo y;  sleep 3;  echo bad) | lxc remote add badpass 127.0.0.1:18443 $debug || true
+  (sleep 3; echo bad) | lxc remote add badpass 127.0.0.1:18443 $debug --accept-certificate || true
   lxc list badpass: && bad=1 || true
   if [ "$bad" -eq 1 ]; then
       echo "bad password accepted" && false
   fi
 
-  (echo y;  sleep 3;  echo foo) |  lxc remote add localhost 127.0.0.1:18443 $debug
+  (echo y; sleep 3) |  lxc remote add localhost 127.0.0.1:18443 $debug --password foo
   lxc remote list | grep 'localhost'
 
   lxc remote set-default localhost

@@ -16,7 +16,6 @@ import (
 	"net"
 	"os"
 	"path"
-	"strings"
 	"time"
 )
 
@@ -24,13 +23,35 @@ import (
  * Generate a list of names for which the certificate will be valid.
  * This will include the hostname and ip address
  */
-func mynames() (*string, error) {
+func mynames() ([]string, error) {
 	h, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
-	// TODO - add InterfaceAddrs to this, comma-separated
-	return &h, nil
+
+	ret := []string{h}
+
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, iface := range ifs {
+		if IsBridge(&iface) || IsLoopback(&iface) {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, addr := range addrs {
+			ret = append(ret, addr.String())
+		}
+	}
+
+	return ret, nil
 }
 
 func FindOrGenCert(certf string, keyf string) error {
@@ -83,14 +104,14 @@ func GenCert(certf string, keyf string) error {
 		return err
 	}
 
-	names, err := mynames()
+	hosts, err := mynames()
 	if err != nil {
 		log.Fatalf("Failed to get my hostname")
 		return err
 	}
 
 	validFrom := time.Now()
-	validTo := validFrom.Add(365 * 24 * time.Hour)
+	validTo := validFrom.Add(10 * 365 * 24 * time.Hour)
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -102,7 +123,7 @@ func GenCert(certf string, keyf string) error {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"linuxcontainer.org"},
+			Organization: []string{"linuxcontainers.org"},
 		},
 		NotBefore: validFrom,
 		NotAfter:  validTo,
@@ -112,7 +133,6 @@ func GenCert(certf string, keyf string) error {
 		BasicConstraintsValid: true,
 	}
 
-	hosts := strings.Split(*names, ",")
 	for _, h := range hosts {
 		if ip := net.ParseIP(h); ip != nil {
 			template.IPAddresses = append(template.IPAddresses, ip)

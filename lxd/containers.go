@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -37,14 +38,8 @@ const (
 )
 
 func containersGet(d *Daemon, r *http.Request) Response {
-	recursion_str := r.FormValue("recursion")
-	recursion, err := strconv.Atoi(recursion_str)
-	if err != nil {
-		recursion = 0
-	}
-
 	for {
-		result, err := doContainersGet(d, recursion)
+		result, err := doContainersGet(d, d.isRecursionRequest(r))
 		if err == nil {
 			return SyncResponse(true, result)
 		}
@@ -102,8 +97,8 @@ func doContainerGet(d *Daemon, cname string) (shared.ContainerInfo, Response) {
 	return containerinfo, nil
 }
 
-func doContainersGet(d *Daemon, recursion int) (interface{}, error) {
-	q := fmt.Sprintf("SELECT name FROM containers WHERE type=?")
+func doContainersGet(d *Daemon, recursion bool) (interface{}, error) {
+	q := fmt.Sprintf("SELECT name FROM containers WHERE type=? ORDER BY name")
 	inargs := []interface{}{cTypeRegular}
 	var container string
 	outfmt := []interface{}{container}
@@ -115,7 +110,7 @@ func doContainersGet(d *Daemon, recursion int) (interface{}, error) {
 	}
 	for _, r := range result {
 		container := string(r[0].(string))
-		if recursion == 0 {
+		if !recursion {
 			url := fmt.Sprintf("/%s/containers/%s", shared.APIVersion, container)
 			result_string = append(result_string, url)
 		} else {
@@ -127,7 +122,7 @@ func doContainersGet(d *Daemon, recursion int) (interface{}, error) {
 		}
 	}
 
-	if recursion == 0 {
+	if !recursion {
 		return result_string, nil
 	} else {
 		return result_map, nil
@@ -232,13 +227,10 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 				return InternalError(err)
 			}
 		} else {
-			_, iId, err := dbAliasGet(d, req.Source.Alias)
+
+			hash, err = dbAliasGet(d.db, req.Source.Alias)
 			if err != nil {
 				return InternalError(err)
-			}
-			hash, err = dbImageGetById(d, iId)
-			if err != nil {
-				return InternalError(fmt.Errorf("Stale alias"))
 			}
 		}
 	} else if req.Source.Fingerprint != "" {
@@ -254,7 +246,7 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 		}
 	}
 
-	imgInfo, err := dbImageGet(d, hash, false)
+	imgInfo, err := dbImageGet(d.db, hash, false)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -295,7 +287,7 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 			}
 
 			if !c.isPrivileged() {
-				return shiftRootfs(name, d)
+				return shiftRootfs(c, name, d)
 			}
 
 			return nil
@@ -313,7 +305,7 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 			}
 
 			if !c.isPrivileged() {
-				return shiftRootfs(name, d)
+				return shiftRootfs(c, name, d)
 			}
 
 			return nil
@@ -355,14 +347,14 @@ func extractShiftIfExists(d *Daemon, c *lxdContainer, hash string, name string) 
 		return nil
 	}
 
-	_, err := dbImageGet(d, hash, false)
+	_, err := dbImageGet(d.db, hash, false)
 	if err == nil {
 		if err := extractRootfs(hash, name, d); err != nil {
 			return err
 		}
 
 		if !c.isPrivileged() {
-			if err := shiftRootfs(name, d); err != nil {
+			if err := shiftRootfs(c, name, d); err != nil {
 				return err
 			}
 		}
@@ -422,7 +414,7 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 		Dialer:    websocket.Dialer{TLSClientConfig: config},
 		Container: c.c,
 		Secrets:   req.Source.Websockets,
-		IdMap:     d.idMap,
+		IdMapSet:  c.IdmapSet,
 	}
 
 	sink, err := migration.NewMigrationSink(&args)
@@ -514,7 +506,7 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 		output, err := exec.Command("rsync", "-a", "--devices", oldPath, newPath).CombinedOutput()
 
 		if err == nil && !source.isPrivileged() {
-			err = setUnprivUserAcl(d, dpath)
+			err = setUnprivUserAcl(source, dpath)
 			if err != nil {
 				shared.Debugf("Error adding acl for container root: falling back to chmod\n")
 				output, err := exec.Command("chmod", "+x", dpath).CombinedOutput()
@@ -541,7 +533,7 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 func containersPost(d *Daemon, r *http.Request) Response {
 	shared.Debugf("responding to create")
 
-	if d.idMap == nil {
+	if d.IdmapSet == nil {
 		return BadRequest(fmt.Errorf("shared's user has no subuids"))
 	}
 
@@ -663,10 +655,10 @@ func extractRootfs(hash string, name string, d *Daemon) error {
 	return nil
 }
 
-func shiftRootfs(name string, d *Daemon) error {
+func shiftRootfs(c *lxdContainer, name string, d *Daemon) error {
 	dpath := shared.VarPath("lxc", name)
 	rpath := shared.VarPath("lxc", name, "rootfs")
-	err := d.idMap.ShiftRootfs(rpath)
+	err := c.IdmapSet.ShiftRootfs(rpath)
 	if err != nil {
 		shared.Debugf("Shift of rootfs %s failed: %s\n", rpath, err)
 		removeContainer(d, name)
@@ -674,7 +666,7 @@ func shiftRootfs(name string, d *Daemon) error {
 	}
 
 	/* Set an acl so the container root can descend the container dir */
-	err = setUnprivUserAcl(d, dpath)
+	err = setUnprivUserAcl(c, dpath)
 	if err != nil {
 		shared.Debugf("Error adding acl for container root: falling back to chmod\n")
 		output, err := exec.Command("chmod", "+x", dpath).CombinedOutput()
@@ -688,8 +680,19 @@ func shiftRootfs(name string, d *Daemon) error {
 	return nil
 }
 
-func setUnprivUserAcl(d *Daemon, dpath string) error {
-	acl := fmt.Sprintf("%d:rx", d.idMap.Uidmin)
+func setUnprivUserAcl(c *lxdContainer, dpath string) error {
+	if c.IdmapSet == nil {
+		return nil
+	}
+	uid, _ := c.IdmapSet.ShiftIntoNs(0, 0)
+	switch uid {
+	case -1:
+		shared.Debugf("setUnprivUserAcl: no root id mapping")
+		return nil
+	case 0:
+		return nil
+	}
+	acl := fmt.Sprintf("%d:rx", uid)
 	output, err := exec.Command("setfacl", "-m", acl, dpath).CombinedOutput()
 	if err != nil {
 		shared.Debugf("setfacl failed:\n%s", output)
@@ -871,8 +874,109 @@ type containerConfigReq struct {
 	Restore  string            `json:"restore"`
 }
 
-func containerSnapRestore(id int, snap string) Response {
-	return NotImplemented
+func containerSnapRestore(d *Daemon, name string, snap string) error {
+	// normalize snapshot name
+	if !shared.IsSnapshot(snap) {
+		snap = fmt.Sprintf("%s/%s", name, snap)
+	}
+
+	shared.Debugf("RESTORE => Restoring snapshot [%s] on container [%s]", snap, name)
+	/*
+	 * restore steps:
+	 * 1. stop container if already running
+	 * 2. overwrite existing config with snapshot config
+	 * 3. copy snapshot rootfs to container
+	 */
+	wasRunning := false
+	c, err := newLxdContainer(name, d)
+
+	if err != nil {
+		shared.Debugf("RESTORE => Error: newLxdContainer() failed for container", err)
+		return err
+	}
+
+	// 1. stop container
+	// TODO: stateful restore ?
+	if c.c.Running() {
+		wasRunning = true
+		if err = c.Stop(); err != nil {
+			shared.Debugf("RESTORE => Error: could not stop container", err)
+			return err
+		}
+		shared.Debugf("RESTORE => Stopped container %s", name)
+	}
+
+	// 2, replace config
+
+	// Make sure the source exists.
+	source, err := newLxdContainer(snap, d)
+	if err != nil {
+		shared.Debugf("RESTORE => Error: newLxdContainer() failed for snapshot", err)
+		return err
+	}
+
+	newConfig := containerConfigReq{}
+	newConfig.Config = source.config
+	newConfig.Profiles = source.profiles
+	newConfig.Devices = source.devices
+
+	err = containerReplaceConfig(d, c, name, newConfig)
+	if err != nil {
+		shared.Debugf("RESTORE => err #4", err)
+		return err
+	}
+
+	// 3. copy rootfs
+	// TODO: btrfs optimizations
+
+	containerRootPath := shared.VarPath("lxc", name)
+	// Check container dir already exists
+	fileinfo, err := os.Stat(path.Dir(containerRootPath))
+	if err != nil {
+		shared.Debugf("RESTORE => Could not stat %s to %s", containerRootPath, err)
+		return err
+	}
+
+	if !(fileinfo.IsDir()) {
+		shared.Debugf("RESTORE => containerRoot [%s] directory does not exist", containerRootPath)
+		return os.ErrNotExist
+	}
+
+	var snapshotRootFSPath string
+	snapshotRootFSPath = migration.AddSlash(snapshotRootfsDir(c, strings.SplitN(snap, "/", 2)[1]))
+
+	containerRootFSPath := migration.AddSlash(fmt.Sprintf("%s/%s", containerRootPath, "rootfs"))
+	shared.Debugf("RESTORE => Copying %s to %s", snapshotRootFSPath, containerRootFSPath)
+
+	rsync_verbosity := "-q"
+	if *debug {
+		rsync_verbosity = "-vi"
+	}
+
+	output, err := exec.Command("rsync", "-a", "-c", "-HAX", "--devices", "--delete", rsync_verbosity, snapshotRootFSPath, containerRootFSPath).CombinedOutput()
+	shared.Debugf("RESTORE => rsync output\n%s", output)
+
+	if err == nil && !source.isPrivileged() {
+		err = setUnprivUserAcl(c, containerRootPath)
+		if err != nil {
+			shared.Debugf("Error adding acl for container root: falling back to chmod\n")
+			output, err := exec.Command("chmod", "+x", containerRootPath).CombinedOutput()
+			if err != nil {
+				shared.Debugf("Error chmoding the container root\n")
+				shared.Debugf(string(output))
+				return err
+			}
+		}
+	} else {
+		shared.Debugf("rsync failed:\n%s", output)
+		return err
+	}
+
+	if wasRunning {
+		c.Start()
+	}
+
+	return nil
 }
 
 func dbClearContainerConfig(tx *sql.Tx, id int) error {
@@ -1001,7 +1105,7 @@ func emptyProfile(l []string) bool {
  */
 func containerPut(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	cId, err := dbGetContainerId(d.db, name)
+	c, err := newLxdContainer(name, d)
 	if err != nil {
 		return NotFound
 	}
@@ -1011,51 +1115,73 @@ func containerPut(d *Daemon, r *http.Request) Response {
 		return BadRequest(err)
 	}
 
-	do := func() error {
+	var do = func() error { return nil }
 
-		tx, err := shared.DbBegin(d.db)
-		if err != nil {
-			return err
+	if configRaw.Restore == "" {
+		// Update container configuration
+		do = func() error {
+			return containerReplaceConfig(d, c, name, configRaw)
 		}
-
-		/* Update config or profiles */
-		if err = dbClearContainerConfig(tx, cId); err != nil {
-			shared.Debugf("Error clearing configuration for container %s\n", name)
-			tx.Rollback()
-			return err
+	} else {
+		// Snapshot Restore
+		do = func() error {
+			return containerSnapRestore(d, name, configRaw.Restore)
 		}
-
-		if err = dbInsertContainerConfig(tx, cId, configRaw.Config); err != nil {
-			shared.Debugf("Error inserting configuration for container %s\n", name)
-			tx.Rollback()
-			return err
-		}
-
-		/* handle profiles */
-		if emptyProfile(configRaw.Profiles) {
-			_, err := tx.Exec("DELETE from containers_profiles where container_id=?", cId)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-		} else {
-			if err := dbInsertProfiles(tx, cId, configRaw.Profiles); err != nil {
-
-				tx.Rollback()
-				return err
-			}
-		}
-
-		err = shared.AddDevices(tx, "container", cId, configRaw.Devices)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-
-		return shared.TxCommit(tx)
 	}
 
 	return AsyncResponse(shared.OperationWrap(do), nil)
+}
+
+func containerReplaceConfig(d *Daemon, ct *lxdContainer, name string, newConfig containerConfigReq) error {
+
+	/* check to see that the config actually applies to the container
+	 * successfully before saving it. in particular, raw.lxc and
+	 * raw.apparmor need to be parsed once to make sure they make sense.
+	 */
+	if err := ct.applyConfig(newConfig.Config, false); err != nil {
+		return err
+	}
+
+	tx, err := shared.DbBegin(d.db)
+	if err != nil {
+		return err
+	}
+
+	/* Update config or profiles */
+	if err = dbClearContainerConfig(tx, ct.id); err != nil {
+		shared.Debugf("Error clearing configuration for container %s\n", name)
+		tx.Rollback()
+		return err
+	}
+
+	if err = dbInsertContainerConfig(tx, ct.id, newConfig.Config); err != nil {
+		shared.Debugf("Error inserting configuration for container %s\n", name)
+		tx.Rollback()
+		return err
+	}
+
+	/* handle profiles */
+	if emptyProfile(newConfig.Profiles) {
+		_, err := tx.Exec("DELETE from containers_profiles where container_id=?", ct.id)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	} else {
+		if err := dbInsertProfiles(tx, ct.id, newConfig.Profiles); err != nil {
+
+			tx.Rollback()
+			return err
+		}
+	}
+
+	err = AddDevices(tx, "container", ct.id, newConfig.Devices)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return shared.TxCommit(tx)
 }
 
 type containerPostBody struct {
@@ -1169,15 +1295,49 @@ type lxdContainer struct {
 	profiles  []string
 	devices   shared.Devices
 	ephemeral bool
+	IdmapSet  *shared.IdmapSet
+}
+
+func getIps(c *lxc.Container) []shared.Ip {
+	ips := []shared.Ip{}
+	names, err := c.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, n := range names {
+		addresses, err := c.IPAddress(n)
+		if err != nil {
+			continue
+		}
+		for _, a := range addresses {
+			ip := shared.Ip{Interface: n, Address: a}
+			if net.ParseIP(a).To4() == nil {
+				ip.Protocol = "IPV6"
+			} else {
+				ip.Protocol = "IPV4"
+			}
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+func NewStatus(c *lxc.Container, state lxc.State) shared.ContainerStatus {
+	status := shared.ContainerStatus{State: state.String(), StateCode: shared.State(int(state))}
+	if state == lxc.RUNNING {
+		status.Init = c.InitPid()
+		status.Ips = getIps(c)
+	}
+	return status
 }
 
 func (c *lxdContainer) RenderState() (*shared.ContainerState, error) {
-	devices, err := dbGetDevices(c.daemon, c.name, false)
+	devices, err := dbGetDevices(c.daemon.db, c.name, false)
 	if err != nil {
 		return nil, err
 	}
 
-	config, err := dbGetConfig(c.daemon, c)
+	config, err := dbGetConfig(c.daemon.db, c.id)
 	if err != nil {
 		return nil, err
 	}
@@ -1188,7 +1348,7 @@ func (c *lxdContainer) RenderState() (*shared.ContainerState, error) {
 		Config:          config,
 		ExpandedConfig:  c.config,
 		Userdata:        []byte{},
-		Status:          shared.NewStatus(c.c, c.c.State()),
+		Status:          NewStatus(c.c, c.c.State()),
 		Devices:         devices,
 		ExpandedDevices: c.devices,
 		Ephemeral:       c.ephemeral,
@@ -1287,7 +1447,7 @@ func (d *lxdContainer) applyConfig(config map[string]string, fromProfile bool) e
 				err = nil
 			}
 
-			/* Things like security.privileged need to be propagatged */
+			/* Things like security.privileged need to be propagated */
 			d.config[k] = v
 		}
 		if err != nil {
@@ -1318,7 +1478,7 @@ func (d *lxdContainer) applyConfig(config map[string]string, fromProfile bool) e
 		}
 
 		if err := d.c.LoadConfigFile(f.Name()); err != nil {
-			return err
+			return fmt.Errorf("problem applying raw.lxc, perhaps there is a syntax error?")
 		}
 	}
 
@@ -1354,7 +1514,7 @@ func applyProfile(daemon *Daemon, d *lxdContainer, p string) error {
 		config[k] = v
 	}
 
-	newdevs, err := dbGetDevices(daemon, p, true)
+	newdevs, err := dbGetDevices(daemon.db, p, true)
 	if err != nil {
 		return err
 	}
@@ -1525,6 +1685,20 @@ func (c *lxdContainer) setupMacAddresses(d *Daemon) error {
 	return nil
 }
 
+func (c *lxdContainer) applyIdmapSet() error {
+	if c.IdmapSet == nil {
+		return nil
+	}
+	lines := c.IdmapSet.ToLxcString()
+	for _, line := range lines {
+		err := c.c.SetConfigItem("lxc.id_map", line)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *lxdContainer) applyDevices() error {
 	for name, d := range c.devices {
 		if name == "type" {
@@ -1602,18 +1776,20 @@ func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 		return nil, err
 	}
 
-	err = c.SetConfigItem("lxc.include", "/usr/share/lxc/config/ubuntu.userns.conf")
-	if err != nil {
-		return nil, err
+	if !d.isPrivileged() {
+		err = c.SetConfigItem("lxc.include", "/usr/share/lxc/config/ubuntu.userns.conf")
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	config, err := dbGetConfig(daemon, d)
+	config, err := dbGetConfig(daemon.db, d.id)
 	if err != nil {
 		return nil, err
 	}
 	d.config = config
 
-	profiles, err := dbGetProfiles(daemon, d)
+	profiles, err := dbGetProfiles(daemon.db, d.id)
 	if err != nil {
 		return nil, err
 	}
@@ -1648,7 +1824,7 @@ func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 	}
 
 	/* get container_devices */
-	newdevs, err := dbGetDevices(daemon, d.name, false)
+	newdevs, err := dbGetDevices(daemon.db, d.name, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1668,16 +1844,12 @@ func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 	}
 
 	if !d.isPrivileged() {
-		uidstr := fmt.Sprintf("u 0 %d %d\n", daemon.idMap.Uidmin, daemon.idMap.Uidrange)
-		err = c.SetConfigItem("lxc.id_map", uidstr)
-		if err != nil {
-			return nil, err
-		}
-		gidstr := fmt.Sprintf("g 0 %d %d\n", daemon.idMap.Gidmin, daemon.idMap.Gidrange)
-		err = c.SetConfigItem("lxc.id_map", gidstr)
-		if err != nil {
-			return nil, err
-		}
+		d.IdmapSet = daemon.IdmapSet // TODO - per-tenant idmaps
+	}
+
+	err = d.applyIdmapSet()
+	if err != nil {
+		return nil, err
 	}
 
 	err = d.applyConfig(d.config, false)
@@ -1766,7 +1938,7 @@ func containerFileHandler(d *Daemon, r *http.Request) Response {
 	case "GET":
 		return containerFileGet(r, p)
 	case "POST":
-		return containerFilePut(r, p, d.idMap, c.isPrivileged())
+		return containerFilePut(r, p, c.IdmapSet)
 	default:
 		return NotFound
 	}
@@ -1793,18 +1965,15 @@ func containerFileGet(r *http.Request, path string) Response {
 	return FileResponse(r, path, filepath.Base(path), headers)
 }
 
-func containerFilePut(r *http.Request, p string, idmap *shared.Idmap, privileged bool) Response {
+func containerFilePut(r *http.Request, p string, idmapset *shared.IdmapSet) Response {
 
 	uid, gid, mode, err := shared.ParseLXDFileHeaders(r.Header)
 	if err != nil {
 		return BadRequest(err)
 	}
-
-	if !privileged {
-
-		// map provided uid / gid to UID / GID range of the container
-		uid = int(idmap.Uidmin) + uid
-		gid = int(idmap.Gidmin) + gid
+	uid, gid = idmapset.ShiftIntoNs(uid, gid)
+	if uid == -1 || gid == -1 {
+		return BadRequest(fmt.Errorf("unmapped uid or gid specified"))
 	}
 
 	fileinfo, err := os.Stat(path.Dir(p))
@@ -1829,7 +1998,7 @@ func containerFilePut(r *http.Request, p string, idmap *shared.Idmap, privileged
 
 	err = f.Chown(uid, gid)
 	if err != nil {
-		return SmartError(err)
+		return InternalError(err)
 	}
 
 	_, err = io.Copy(f, r.Body)
@@ -1859,8 +2028,17 @@ func snapshotRootfsDir(c *lxdContainer, name string) string {
 }
 
 func containerSnapshotsGet(d *Daemon, r *http.Request) Response {
+	recursion_str := r.FormValue("recursion")
+	recursion, err := strconv.Atoi(recursion_str)
+	if err != nil {
+		recursion = 0
+	}
 
 	cname := mux.Vars(r)["name"]
+	c, err := newLxdContainer(cname, d)
+	if err != nil {
+		return SmartError(err)
+	}
 
 	regexp := fmt.Sprintf("%s/", cname)
 	length := len(regexp)
@@ -1873,16 +2051,28 @@ func containerSnapshotsGet(d *Daemon, r *http.Request) Response {
 		return SmartError(err)
 	}
 
-	var body []string
+	var result_string []string
+	var result_map []shared.Jmap
 
 	for _, r := range results {
 		name = r[0].(string)
+		if recursion == 0 {
+			url := fmt.Sprintf("/%s/containers/%s/snapshots/%s", shared.APIVersion, cname, name)
+			result_string = append(result_string, url)
+		} else {
+			_, err := os.Stat(snapshotStateDir(c, name))
+			body := shared.Jmap{"name": name, "stateful": err == nil}
+			result_map = append(result_map, body)
+		}
 
-		url := fmt.Sprintf("/%s/containers/%s/snapshots/%s", shared.APIVersion, cname, name)
-		body = append(body, url)
 	}
 
-	return SyncResponse(true, body)
+	if recursion == 0 {
+		return SyncResponse(true, result_string)
+	} else {
+		return SyncResponse(true, result_map)
+	}
+
 }
 
 /*
@@ -2259,9 +2449,8 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 	if post.WaitForWS {
 		ws := &execWs{}
 		ws.fds = map[int]string{}
-		if !c.isPrivileged() {
-			ws.rootUid = int(d.idMap.Uidmin)
-			ws.rootGid = int(d.idMap.Gidmin)
+		if c.IdmapSet != nil {
+			ws.rootUid, ws.rootGid = c.IdmapSet.ShiftIntoNs(0, 0)
 		}
 		if post.Interactive {
 			ws.conns = make([]*websocket.Conn, 1)

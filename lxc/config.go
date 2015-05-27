@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/gosexy/gettext"
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
+	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 )
 
@@ -47,6 +49,7 @@ func (c *configCmd) usage() string {
 			"lxc config device add <container> <name> <type> [key=value]...\n" +
 			"               Add a device to a container\n" +
 			"lxc config device list <container>                List devices for container\n" +
+			"lxc config device show <container>                Show full device details for container\n" +
 			"lxc config device remove <container> <name>       Remove device from container\n" +
 			"lxc config edit <container>                      Edit container configuration in external editor\n" +
 			"lxc config get <container> key                   Get configuration key\n" +
@@ -102,27 +105,22 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		return doSet(config, append(args, ""))
 
 	case "set":
-		if len(args) < 2 {
+		if len(args) < 3 {
 			return errArgs
 		}
 
-		if args[1] == "password" {
-			if len(args) != 3 {
-				return errArgs
+		if len(args) == 3 {
+			key := args[1]
+			if key == "password" {
+				key = "trust-password"
 			}
 
-			password := args[2]
 			c, err := lxd.NewClient(config, "")
 			if err != nil {
 				return err
 			}
-
-			_, err = c.SetRemotePwd(password)
+			_, err = c.SetServerConfig(key, args[2])
 			return err
-		}
-
-		if len(args) < 3 {
-			return errArgs
 		}
 
 		return doSet(config, args)
@@ -200,22 +198,42 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		}
 
 	case "show":
-		if len(args) == 1 {
-			return fmt.Errorf(gettext.Gettext("Show for server is not yet supported\n"))
+		remote := ""
+		container := ""
+		if len(args) > 1 {
+			remote, container = config.ParseRemoteAndContainer(args[1])
+			if container == "" {
+				return fmt.Errorf(gettext.Gettext("Show for remotes is not yet supported\n"))
+			}
 		}
-		remote, container := config.ParseRemoteAndContainer(args[1])
-		if container == "" {
-			return fmt.Errorf(gettext.Gettext("Show for remotes is not yet supported\n"))
-		}
+
 		d, err := lxd.NewClient(config, remote)
 		if err != nil {
 			return err
 		}
-		resp, err := d.GetContainerConfig(container)
-		if err != nil {
-			return err
+
+		var data []byte
+
+		if len(args) == 1 || container == "" {
+			config, err := d.ServerStatus()
+			if err != nil {
+				return err
+			}
+
+			brief := config.BriefState()
+			data, err = yaml.Marshal(&brief)
+		} else {
+			config, err := d.ContainerStatus(container, false)
+			if err != nil {
+				return err
+			}
+
+			brief := config.BriefState()
+			data, err = yaml.Marshal(&brief)
 		}
-		fmt.Printf("%s\n", strings.Join(resp, "\n"))
+
+		fmt.Printf("%s", data)
+
 		return nil
 
 	case "get":
@@ -248,6 +266,8 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 			return deviceAdd(config, "container", args)
 		case "remove":
 			return deviceRm(config, "container", args)
+		case "show":
+			return deviceShow(config, "container", args)
 		default:
 			return errArgs
 		}
@@ -273,6 +293,20 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 }
 
 func doConfigEdit(client *lxd.Client, cont string) error {
+	if !terminal.IsTerminal(syscall.Stdin) {
+		contents, err := ioutil.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+
+		newdata := shared.BriefContainerState{}
+		err = yaml.Unmarshal(contents, &newdata)
+		if err != nil {
+			return err
+		}
+		return client.UpdateContainerConfig(cont, newdata)
+	}
+
 	config, err := client.ContainerStatus(cont, false)
 	if err != nil {
 		return err
@@ -419,6 +453,45 @@ func deviceList(config *lxd.Config, which string, args []string) error {
 		return err
 	}
 	fmt.Printf("%s\n", strings.Join(resp, "\n"))
+
+	return nil
+}
+
+func deviceShow(config *lxd.Config, which string, args []string) error {
+	if len(args) < 3 {
+		return errArgs
+	}
+	remote, name := config.ParseRemoteAndContainer(args[2])
+
+	client, err := lxd.NewClient(config, remote)
+	if err != nil {
+		return err
+	}
+
+	var devices map[string]shared.Device
+	if which == "profile" {
+		resp, err := client.ProfileConfig(name)
+		if err != nil {
+			return err
+		}
+
+		devices = resp.Devices
+
+	} else {
+		resp, err := client.ContainerStatus(name, false)
+		if err != nil {
+			return err
+		}
+
+		devices = resp.Devices
+	}
+
+	for n, d := range devices {
+		fmt.Printf("%s\n", n)
+		for attr, val := range d {
+			fmt.Printf("  %s: %s\n", attr, val)
+		}
+	}
 
 	return nil
 }

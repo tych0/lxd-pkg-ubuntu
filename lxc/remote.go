@@ -8,12 +8,15 @@ import (
 
 	"github.com/gosexy/gettext"
 	"github.com/lxc/lxd"
+	"github.com/lxc/lxd/internal/gnuflag"
 	"github.com/lxc/lxd/shared"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
 type remoteCmd struct {
-	httpAddr string
+	httpAddr   string
+	acceptCert bool
+	password   string
 }
 
 func (c *remoteCmd) showByDefault() bool {
@@ -24,18 +27,21 @@ func (c *remoteCmd) usage() string {
 	return gettext.Gettext(
 		"Manage remote LXD servers.\n" +
 			"\n" +
-			"lxc remote add <name> <url>        Add the remote <name> at <url>.\n" +
-			"lxc remote remove <name>           Remove the remote <name>.\n" +
-			"lxc remote list                    List all remotes.\n" +
-			"lxc remote rename <old> <new>      Rename remote <old> to <new>.\n" +
-			"lxc remote set-url <name> <url>    Update <name>'s url to <url>.\n" +
-			"lxc remote set-default <name>      Set the default remote.\n" +
-			"lxc remote get-default             Print the default remote.\n")
+			"lxc remote add <name> <url> [--accept-certificate] [--password=PASSWORD]  Add the remote <name> at <url>.\n" +
+			"lxc remote remove <name>                                                  Remove the remote <name>.\n" +
+			"lxc remote list                                                           List all remotes.\n" +
+			"lxc remote rename <old> <new>                                             Rename remote <old> to <new>.\n" +
+			"lxc remote set-url <name> <url>                                           Update <name>'s url to <url>.\n" +
+			"lxc remote set-default <name>                                             Set the default remote.\n" +
+			"lxc remote get-default                                                    Print the default remote.\n")
 }
 
-func (c *remoteCmd) flags() {}
+func (c *remoteCmd) flags() {
+	gnuflag.BoolVar(&c.acceptCert, "accept-certificate", false, gettext.Gettext("Accept certificate"))
+	gnuflag.StringVar(&c.password, "password", "", gettext.Gettext("Remote admin password"))
+}
 
-func addServer(config *lxd.Config, server string, addr string) error {
+func addServer(config *lxd.Config, server string, addr string, acceptCert bool, password string) error {
 	var r_scheme string
 	var r_host string
 	var r_port string
@@ -111,7 +117,7 @@ func addServer(config *lxd.Config, server string, addr string) error {
 		return nil
 	}
 
-	err = c.UserAuthServerCert(host)
+	err = c.UserAuthServerCert(host, acceptCert)
 	if err != nil {
 		return err
 	}
@@ -121,19 +127,22 @@ func addServer(config *lxd.Config, server string, addr string) error {
 		return nil
 	}
 
-	fmt.Printf(gettext.Gettext("Admin password for %s: "), server)
-	pwd, err := terminal.ReadPassword(0)
-	if err != nil {
-		/* We got an error, maybe this isn't a terminal, let's try to
-		 * read it as a file */
-		pwd, err = shared.ReadStdin()
+	if password == "" {
+		fmt.Printf(gettext.Gettext("Admin password for %s: "), server)
+		pwd, err := terminal.ReadPassword(0)
 		if err != nil {
-			return err
+			/* We got an error, maybe this isn't a terminal, let's try to
+			 * read it as a file */
+			pwd, err = shared.ReadStdin()
+			if err != nil {
+				return err
+			}
 		}
+		fmt.Printf("\n")
+		password = string(pwd)
 	}
-	fmt.Printf("\n")
 
-	err = c.AddMyCertToServer(string(pwd))
+	err = c.AddMyCertToServer(password)
 	if err != nil {
 		return err
 	}
@@ -160,7 +169,7 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 
 	switch args[0] {
 	case "add":
-		if len(args) != 3 {
+		if len(args) < 3 {
 			return errArgs
 		}
 
@@ -168,7 +177,7 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 			return fmt.Errorf(gettext.Gettext("remote %s exists as <%s>"), args[1], rc.Addr)
 		}
 
-		err := addServer(config, args[1], args[2])
+		err := addServer(config, args[1], args[2], c.acceptCert, c.password)
 		if err != nil {
 			delete(config.Remotes, args[1])
 			return err

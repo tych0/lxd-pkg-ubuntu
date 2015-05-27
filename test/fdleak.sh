@@ -1,5 +1,5 @@
 test_fdleak() {
-    if ! lxc image alias list | grep -q ^testimage$; then
+    if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
         if [ -e "$LXD_TEST_IMAGE" ]; then
             lxc image import $LXD_TEST_IMAGE --alias testimage
         else
@@ -17,5 +17,5 @@ test_fdleak() {
     lxc delete leaktest1
     afterfds=`/bin/ls /proc/$lxd1_pid/fd | wc -l`
     leakedfds=$((afterfds - beforefds))
-    [ $leakedfds -eq 0 ] || { echo "$leakedfds FDS leaked"; ls /proc/$lxd1_pid/fd -al; false; }
+    [ $leakedfds -lt 1 ] || { echo "$leakedfds FDS leaked"; ls /proc/$lxd1_pid/fd -al; false; }
 }

@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/gosexy/gettext"
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
+	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 )
 
@@ -42,18 +44,31 @@ var profileEditHelp string = gettext.Gettext(
 
 func (c *profileCmd) usage() string {
 	return gettext.Gettext(
-		"Manage profiles.\n" +
+		"Manage configuration profiles.\n" +
 			"\n" +
-			"lxc profile list [filters]                List profiles\n" +
-			"lxc profile create <profile>              Create profile\n" +
-			"lxc profile delete <profile>              Delete profile\n" +
-			"lxc profile device add <profile> <name> <type> [key=value]...\n" +
-			"               Delete profile\n" +
-			"lxc profile edit <profile>                Edit profile in external editor\n" +
-			"lxc profile device list <profile>\n" +
-			"lxc profile device remove <profile> <name>\n" +
-			"lxc profile set <profile> <key> <value>   Set profile configuration\n" +
-			"lxc profile apply <resource> <profile>    Apply profile to container\n")
+			"lxc profile list [filters]                     List available profiles\n" +
+			"lxc profile show <profile>                     Show details of a profile\n" +
+			"lxc profile create <profile>                   Create a profile\n" +
+			"lxc profile edit <profile>                     Edit profile in external editor\n" +
+			"lxc profile copy <profile> <remote>            Copy the profile to the specified remote\n" +
+			"lxc profile set <profile> <key> <value>        Set profile configuration\n" +
+			"lxc profile delete <profile>                   Delete a profile\n" +
+			"lxc profile apply <container> <profiles>\n" +
+			"    Apply a comma-separated list of profiles to a container, in order.\n" +
+			"    All profiles passed in this call (and only those) will be applied\n" +
+			"    to the specified container.\n" +
+			"    Example: lxc profile apply foo default,bar # Apply default and bar\n" +
+			"             lxc profile apply foo default # Only default is active\n" +
+			"             lxc profile apply '' # no profiles are applied anymore\n" +
+			"             lxc profile apply bar,default # Apply default second now\n" +
+			"\n" +
+			"Devices:\n" +
+			"lxc profile device list <profile>              List devices in the given profile.\n" +
+			"lxc profile device show <profile>              Show full device details in the given profile.\n" +
+			"lxc profile device remove <profile> <name>     Remove a device from a profile.\n" +
+			"lxc profile device add <profile name> <device name> <device type> [key=value]...\n" +
+			"    Add a profile device, such as a disk or a nic, to the containers\n" +
+			"    using the specified profile.\n")
 }
 
 func (c *profileCmd) flags() {}
@@ -121,6 +136,20 @@ func doProfileCreate(client *lxd.Client, p string) error {
 }
 
 func doProfileEdit(client *lxd.Client, p string) error {
+	if !terminal.IsTerminal(syscall.Stdin) {
+		contents, err := ioutil.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+
+		newdata := shared.ProfileConfig{}
+		err = yaml.Unmarshal(contents, &newdata)
+		if err != nil {
+			return err
+		}
+		return client.PutProfile(p, newdata)
+	}
+
 	profile, err := client.ProfileConfig(p)
 	if err != nil {
 		return err
@@ -201,19 +230,13 @@ func doProfileApply(client *lxd.Client, c string, p string) error {
 }
 
 func doProfileShow(client *lxd.Client, p string) error {
-	resp, err := client.GetProfileConfig(p)
+	profile, err := client.ProfileConfig(p)
 	if err != nil {
 		return err
-	}
-	for k, v := range resp {
-		fmt.Printf("%s = %s\n", k, v)
 	}
 
-	dresp, err := client.ProfileListDevices(p)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("%s\n", strings.Join(dresp, "\n"))
+	data, err := yaml.Marshal(&profile)
+	fmt.Printf("%s", data)
 
 	return nil
 }
@@ -249,6 +272,8 @@ func doProfileDevice(config *lxd.Config, args []string) error {
 		return deviceRm(config, "profile", args)
 	case "list":
 		return deviceList(config, "profile", args)
+	case "show":
+		return deviceShow(config, "profile", args)
 	default:
 		return errArgs
 	}

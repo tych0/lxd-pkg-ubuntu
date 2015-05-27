@@ -12,6 +12,17 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+var (
+	DbErrAlreadyDefined = fmt.Errorf("already exists")
+	NoSuchImageError    = errors.New("No such image")
+)
+
+type Profile struct {
+	name  string
+	order int
+}
+type Profiles []Profile
+
 const DB_CURRENT_VERSION int = 7
 
 const CURRENT_SCHEMA string = `
@@ -134,10 +145,6 @@ CREATE TABLE IF NOT EXISTS schema (
     updated_at DATETIME NOT NULL,
     UNIQUE (version)
 );`
-
-var (
-	DbErrAlreadyDefined = fmt.Errorf("already exists")
-)
 
 // Create the initial (current) schema for a given SQLite DB connection.
 // This should stay indempotent.
@@ -657,119 +664,99 @@ func initDb(d *Daemon) (err error) {
 	return err
 }
 
-var NoSuchImageError = errors.New("No such image")
-
-func dbImageGet(d *Daemon, name string, public bool) (*shared.ImageBaseInfo, error) {
-
-	// count potential images first, if more than one
-	// return error
-	var countImg int
+// Get an ImageBaseInfo object from the database.
+// There can never be more than one image with a given fingerprint, as it is
+// enforced by a UNIQUE constraint in the schema.
+func dbImageGet(db *sql.DB, fingerprint string, public bool) (*shared.ImageBaseInfo, error) {
 	var err error
-	q := "SELECT count(id) FROM images WHERE fingerprint like ?"
-	if public {
-		q = q + " AND public=1"
-	}
+	var create, expire, upload *time.Time // These hold the db-returned times
 
-	arg1 := []interface{}{name + "%"}
-	arg2 := []interface{}{&countImg}
-	err = shared.DbQueryRowScan(d.db, q, arg1, arg2)
-	if err != nil {
-		return nil, err
-	}
-
-	if countImg > 1 {
-		return nil, fmt.Errorf("Multiple images for fingerprint")
-	}
-
+	// The object we'll actually return
 	image := new(shared.ImageBaseInfo)
 
-	var create, expire, upload *time.Time
-	q = `SELECT id, fingerprint, filename, size, public, architecture, creation_date, expiry_date, upload_date FROM images WHERE fingerprint like ?`
-	if public {
-		q = q + " AND public=1"
-	}
-
-	arg2 = []interface{}{&image.Id, &image.Fingerprint, &image.Filename,
+	// These two humongous things will be filled by the call to DbQueryRowScan
+	inargs := []interface{}{fingerprint + "%"}
+	outfmt := []interface{}{&image.Id, &image.Fingerprint, &image.Filename,
 		&image.Size, &image.Public, &image.Architecture,
 		&create, &expire, &upload}
 
-	err = shared.DbQueryRowScan(d.db, q, arg1, arg2)
-	if err != nil {
-		return nil, err
+	query := `
+        SELECT
+            id, fingerprint, filename, size, public, architecture,
+            creation_date, expiry_date, upload_date
+        FROM
+            images
+        WHERE fingerprint like ?`
+
+	if public {
+		query = query + " AND public=1"
 	}
 
+	err = shared.DbQueryRowScan(db, query, inargs, outfmt)
+
+	if err != nil {
+		return nil, err // Likely: there are no rows for this fingerprint
+	}
+
+	// Some of the dates can be nil in the DB, let's process them.
 	if create != nil {
-		t := *create
-		image.CreationDate = t.Unix()
+		image.CreationDate = create.Unix()
 	} else {
 		image.CreationDate = 0
 	}
 	if expire != nil {
-		t := *expire
-		image.ExpiryDate = t.Unix()
+		image.ExpiryDate = expire.Unix()
 	} else {
 		image.ExpiryDate = 0
 	}
-	t := *upload
-	image.UploadDate = t.Unix()
+	// The upload date is enforced by NOT NULL in the schema, so it can never be nil.
+	image.UploadDate = upload.Unix()
 
-	switch {
-	case err == sql.ErrNoRows:
-		return nil, NoSuchImageError
-	case err != nil:
-		return nil, err
-	default:
-		return image, nil
-	}
-
+	return image, nil
 }
 
-func dbImageGetById(d *Daemon, id int) (string, error) {
-	q := "SELECT fingerprint FROM images WHERE id=?"
-	var fp string
-	arg1 := []interface{}{id}
-	arg2 := []interface{}{&fp}
-	err := shared.DbQueryRowScan(d.db, q, arg1, arg2)
+// Get an image's fingerprint for a given alias name.
+func dbAliasGet(db *sql.DB, name string) (fingerprint string, err error) {
+	q := `
+        SELECT
+            fingerprint
+        FROM images AS i JOIN images_aliases AS a
+        ON a.image_id == i.id
+        WHERE name=?`
+
+	inargs := []interface{}{name}
+	outfmt := []interface{}{&fingerprint}
+
+	err = shared.DbQueryRowScan(db, q, inargs, outfmt)
+
 	if err == sql.ErrNoRows {
 		return "", NoSuchImageError
 	}
 	if err != nil {
 		return "", err
 	}
-
-	return fp, nil
+	return fingerprint, nil
 }
 
-func dbAliasGet(d *Daemon, name string) (int, int, error) {
-	q := "SELECT id, image_id FROM images_aliases WHERE name=?"
-	var id int
-	var imageid int
-	arg1 := []interface{}{name}
-	arg2 := []interface{}{&id, &imageid}
-	err := shared.DbQueryRowScan(d.db, q, arg1, arg2)
-	if err == sql.ErrNoRows {
-		return 0, 0, NoSuchImageError
-	}
-	if err != nil {
-		return 0, 0, err
-	}
-	return id, imageid, nil
-}
-
-func dbAddAlias(d *Daemon, name string, tgt int, desc string) error {
+// Insert an alias into the database.
+func dbAddAlias(db *sql.DB, name string, imageId int, desc string) error {
 	stmt := `INSERT into images_aliases (name, image_id, description) values (?, ?, ?)`
-	_, err := shared.DbExec(d.db, stmt, name, tgt, desc)
+	_, err := shared.DbExec(db, stmt, name, imageId, desc)
 	return err
 }
 
-func dbGetConfig(d *Daemon, c *lxdContainer) (map[string]string, error) {
-	q := `SELECT key, value FROM containers_config WHERE container_id=?`
+// Get the container configuration map from the DB
+func dbGetConfig(db *sql.DB, containerId int) (map[string]string, error) {
 	var key, value string
-	inargs := []interface{}{c.id}
+	q := `SELECT key, value FROM containers_config WHERE container_id=?`
+
+	inargs := []interface{}{containerId}
 	outfmt := []interface{}{key, value}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+
+	// Results is already a slice here, not db Rows anymore.
+	results, err := shared.DbQueryScan(db, q, inargs, outfmt)
 	if err != nil {
-		return nil, err
+		return nil, err //SmartError will wrap this and make "not found" errors pretty
 	}
 
 	config := map[string]string{}
@@ -784,28 +771,20 @@ func dbGetConfig(d *Daemon, c *lxdContainer) (map[string]string, error) {
 	return config, nil
 }
 
-func dbGetProfileConfig(d *Daemon, name string) (map[string]string, error) {
-	q := "SELECT id FROM profiles WHERE name=?"
-	id := -1
-	arg1 := []interface{}{name}
-	arg2 := []interface{}{&id}
-	err := shared.DbQueryRowScan(d.db, q, arg1, arg2)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("Profile %s not found", name)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	q = `SELECT key, value FROM profiles_config JOIN profiles
-		ON profiles_config.profile_id=profiles.id
-		WHERE name=?`
+// Get the profile configuration map from the DB
+func dbGetProfileConfig(db *sql.DB, name string) (map[string]string, error) {
 	var key, value string
+	query := `
+        SELECT
+            key, value
+        FROM profiles_config
+        JOIN profiles ON profiles_config.profile_id=profiles.id
+		WHERE name=?`
 	inargs := []interface{}{name}
 	outfmt := []interface{}{key, value}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err := shared.DbQueryScan(db, query, inargs, outfmt)
 	if err != nil {
-		return nil, err
+		return nil, err //SmartError will wrap this and make "not found" errors pretty
 	}
 
 	config := map[string]string{}
@@ -820,25 +799,23 @@ func dbGetProfileConfig(d *Daemon, name string) (map[string]string, error) {
 	return config, nil
 }
 
-type Profile struct {
-	name  string
-	order int
-}
-type Profiles []Profile
-
-func dbGetProfiles(d *Daemon, c *lxdContainer) ([]string, error) {
-	q := `SELECT name FROM containers_profiles JOIN profiles
-		ON containers_profiles.profile_id=profiles.id
-		WHERE container_id=? ORDER BY containers_profiles.apply_order`
+// Get a list of profiles for a given container id.
+func dbGetProfiles(db *sql.DB, containerId int) ([]string, error) {
 	var name string
-	inargs := []interface{}{c.id}
+	var profiles []string
+
+	query := `
+        SELECT name FROM containers_profiles
+        JOIN profiles ON containers_profiles.profile_id=profiles.id
+		WHERE container_id=?
+        ORDER BY containers_profiles.apply_order`
+	inargs := []interface{}{containerId}
 	outfmt := []interface{}{name}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+
+	results, err := shared.DbQueryScan(db, query, inargs, outfmt)
 	if err != nil {
 		return nil, err
 	}
-
-	var profiles []string
 
 	for _, r := range results {
 		name = r[0].(string)
@@ -850,17 +827,20 @@ func dbGetProfiles(d *Daemon, c *lxdContainer) ([]string, error) {
 }
 
 func dbGetDeviceConfig(db *sql.DB, id int, isprofile bool) (shared.Device, error) {
-	var q string
-	if isprofile {
-		q = `SELECT key, value FROM profiles_devices_config WHERE profile_device_id=?`
-	} else {
-		q = `SELECT key, value FROM containers_devices_config WHERE container_device_id=?`
-	}
-	newdev := shared.Device{}
+	var query string
 	var key, value string
+	newdev := shared.Device{} // That's a map[string]string
 	inargs := []interface{}{id}
 	outfmt := []interface{}{key, value}
-	results, err := shared.DbQueryScan(db, q, inargs, outfmt)
+
+	if isprofile {
+		query = `SELECT key, value FROM profiles_devices_config WHERE profile_device_id=?`
+	} else {
+		query = `SELECT key, value FROM containers_devices_config WHERE container_device_id=?`
+	}
+
+	results, err := shared.DbQueryScan(db, query, inargs, outfmt)
+
 	if err != nil {
 		return newdev, err
 	}
@@ -874,7 +854,7 @@ func dbGetDeviceConfig(db *sql.DB, id int, isprofile bool) (shared.Device, error
 	return newdev, nil
 }
 
-func dbGetDevices(d *Daemon, qName string, isprofile bool) (shared.Devices, error) {
+func dbGetDevices(db *sql.DB, qName string, isprofile bool) (shared.Devices, error) {
 	var q string
 	if isprofile {
 		q = `SELECT profiles_devices.id, profiles_devices.name, profiles_devices.type
@@ -891,17 +871,17 @@ func dbGetDevices(d *Daemon, qName string, isprofile bool) (shared.Devices, erro
 	var name, dtype string
 	inargs := []interface{}{qName}
 	outfmt := []interface{}{id, name, dtype}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err := shared.DbQueryScan(db, q, inargs, outfmt)
 	if err != nil {
 		return nil, err
 	}
 
-	devices := shared.Devices{}
+	devices := shared.Devices{} // That's basically a map[string]map[string]string
 	for _, r := range results {
 		id = r[0].(int)
 		name = r[1].(string)
 		dtype = r[2].(string)
-		newdev, err := dbGetDeviceConfig(d.db, id, isprofile)
+		newdev, err := dbGetDeviceConfig(db, id, isprofile)
 		if err != nil {
 			return nil, err
 		}
