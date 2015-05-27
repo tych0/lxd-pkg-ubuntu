@@ -89,7 +89,7 @@ func profilesPost(d *Daemon, r *http.Request) Response {
 		return SmartError(err)
 	}
 
-	err = shared.AddDevices(tx, "profile", id, req.Devices)
+	err = AddDevices(tx, "profile", id, req.Devices)
 	if err != nil {
 		tx.Rollback()
 		return SmartError(err)
@@ -108,12 +108,12 @@ var profilesCmd = Command{name: "profiles", get: profilesGet, post: profilesPost
 func profileGet(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
 
-	config, err := dbGetProfileConfig(d, name)
+	config, err := dbGetProfileConfig(d.db, name)
 	if err != nil {
 		return SmartError(err)
 	}
 
-	devices, err := dbGetDevices(d, name, true)
+	devices, err := dbGetDevices(d.db, name, true)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -197,7 +197,7 @@ func profilePut(d *Daemon, r *http.Request) Response {
 		return SmartError(err)
 	}
 
-	err = shared.AddDevices(tx, "profile", id, req.Devices)
+	err = AddDevices(tx, "profile", id, req.Devices)
 	if err != nil {
 		tx.Rollback()
 		return SmartError(err)

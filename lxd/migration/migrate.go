@@ -303,9 +303,9 @@ func (s *migrationSourceWs) Do() shared.OperationResult {
 type migrationSink struct {
 	migrationFields
 
-	url    string
-	dialer websocket.Dialer
-	idMap  *shared.Idmap
+	url      string
+	dialer   websocket.Dialer
+	IdmapSet *shared.IdmapSet
 }
 
 type MigrationSinkArgs struct {
@@ -313,7 +313,7 @@ type MigrationSinkArgs struct {
 	Dialer    websocket.Dialer
 	Container *lxc.Container
 	Secrets   map[string]string
-	IdMap     *shared.Idmap
+	IdMapSet  *shared.IdmapSet
 }
 
 func NewMigrationSink(args *MigrationSinkArgs) (func() error, error) {
@@ -321,7 +321,7 @@ func NewMigrationSink(args *MigrationSinkArgs) (func() error, error) {
 		migrationFields{container: args.Container},
 		args.Url,
 		args.Dialer,
-		args.IdMap,
+		args.IdMapSet,
 	}
 
 	var ok bool
@@ -432,10 +432,12 @@ func (c *migrationSink) do() error {
 			return
 		}
 
-		if err := c.idMap.ShiftRootfs(shared.VarPath("lxc", c.container.Name())); err != nil {
-			restore <- err
-			c.sendControl(err)
-			return
+		if c.IdmapSet != nil {
+			if err := c.IdmapSet.ShiftRootfs(shared.VarPath("lxc", c.container.Name())); err != nil {
+				restore <- err
+				c.sendControl(err)
+				return
+			}
 		}
 
 		if c.live {

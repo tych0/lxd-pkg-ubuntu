@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gosexy/gettext"
@@ -13,6 +14,7 @@ import (
 	"github.com/lxc/lxd/internal/gnuflag"
 	"github.com/lxc/lxd/shared"
 	"github.com/olekukonko/tablewriter"
+	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 )
 
@@ -40,7 +42,9 @@ var imageEditHelp string = gettext.Gettext(
 
 func (c *imageCmd) usage() string {
 	return gettext.Gettext(
-		"lxc image import <tarball> [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]\n" +
+		"Manipulate container images\n" +
+			"\n" +
+			"lxc image import <tarball> [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]\n" +
 			"\n" +
 			"lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-alias]\n" +
 			"lxc image delete [remote:]<image>\n" +
@@ -104,15 +108,8 @@ func doImageAlias(config *lxd.Config, args []string) error {
 			return err
 		}
 
-		for _, url := range resp {
-			/* /1.0/images/aliases/ALIAS_NAME */
-			alias := fromUrl(url, "/1.0/images/aliases/")
-			if alias == "" {
-				fmt.Printf(gettext.Gettext("(Bad alias entry: %s\n"), url)
-			} else {
-				fmt.Println(alias)
-			}
-		}
+		showAliases(resp)
+
 		return nil
 	case "create":
 		/* alias create [<remote>:]<alias> <target> */
@@ -327,6 +324,20 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			return err
 		}
 
+		if !terminal.IsTerminal(syscall.Stdin) {
+			contents, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+
+			newdata := shared.ImageProperties{}
+			err = yaml.Unmarshal(contents, &newdata)
+			if err != nil {
+				return err
+			}
+			return d.PutImageProperties(image, newdata)
+		}
+
 		properties := info.Properties
 		editor := os.Getenv("VISUAL")
 		if editor == "" {
@@ -486,6 +497,23 @@ func showImages(images []shared.ImageInfo) error {
 
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"ALIAS", "FINGERPRINT", "PUBLIC", "DESCRIPTION", "ARCH", "UPLOAD DATE"})
+
+	for _, v := range data {
+		table.Append(v)
+	}
+	table.Render()
+
+	return nil
+}
+
+func showAliases(aliases []shared.ImageAlias) error {
+	data := [][]string{}
+	for _, alias := range aliases {
+		data = append(data, []string{alias.Description, alias.Name[0:12]})
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"ALIAS", "FINGERPRINT"})
 
 	for _, v := range data {
 		table.Append(v)

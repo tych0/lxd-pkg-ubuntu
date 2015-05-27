@@ -1,5 +1,5 @@
 test_config_profiles() {
-  if ! lxc image alias list | grep -q ^testimage$; then
+  if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
       if [ -e "$LXD_TEST_IMAGE" ]; then
           lxc image import $LXD_TEST_IMAGE --alias testimage
       else
@@ -12,6 +12,14 @@ test_config_profiles() {
   # let's check that 'lxc config profile' still works while it's deprecated
   lxc config profile list | grep default
 
+  # setting an invalid config item should error out when setting it, not get
+  # into the database and never let the user edit the container again.
+  bad=0
+  lxc config set foo raw.lxc "lxc.notaconfigkey = invalid" && bad=1 || true
+  if [ "$bad" -eq 1 ]; then
+    echo "allowed setting a bad config value"
+  fi
+
   lxc config device add foo home disk source=/mnt path=/mnt readonly=true
   lxc profile create onenic
   lxc profile device add onenic eth0 nic nictype=bridged parent=lxcbr0
@@ -21,9 +29,11 @@ test_config_profiles() {
   lxc profile apply foo onenic,unconfined
 
   lxc config device list foo | grep home
-  lxc config show foo | grep "onenic,unconfined"
+  lxc config device show foo | grep "/mnt"
+  lxc config show foo | grep "onenic" -A1 | grep "unconfined"
   lxc profile list | grep onenic
   lxc profile device list onenic | grep eth0
+  lxc profile device show onenic | grep lxcbr0
 
   lxc config set foo user.prop value
   lxc list user.prop=value | grep foo

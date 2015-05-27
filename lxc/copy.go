@@ -9,7 +9,6 @@ import (
 	"github.com/gosexy/gettext"
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
-	"gopkg.in/lxc/go-lxc.v2"
 )
 
 type copyCmd struct {
@@ -46,7 +45,7 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 		return err
 	}
 
-	status := shared.ContainerState{}
+	status := &shared.ContainerState{}
 
 	// TODO: presumably we want to do this for copying snapshots too? We
 	// need to think a bit more about how we track the baseImage in the
@@ -55,15 +54,15 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 	baseImage := ""
 
 	if !shared.IsSnapshot(sourceName) {
-		status, err := source.ContainerStatus(sourceName, false)
+		status, err = source.ContainerStatus(sourceName, false)
 		if err != nil {
 			return err
 		}
 
 		baseImage = status.Config["volatile.baseImage"]
 
-		if status.State() == lxc.RUNNING && sourceName != destName {
-			return fmt.Errorf(gettext.Gettext("changing hostname of running containers not supported"))
+		if status.State() == shared.RUNNING {
+			return fmt.Errorf(gettext.Gettext("copying running containers isn't supported at this time"))
 		}
 
 		if !keepVolatile {

@@ -748,13 +748,13 @@ func (c *Client) DeleteAlias(alias string) error {
 	return err
 }
 
-func (c *Client) ListAliases() ([]string, error) {
-	resp, err := c.get("images/aliases")
+func (c *Client) ListAliases() ([]shared.ImageAlias, error) {
+	resp, err := c.get("images/aliases?recursion=1")
 	if err != nil {
 		return nil, err
 	}
 
-	var result []string
+	var result []shared.ImageAlias
 
 	if err := json.Unmarshal(resp.Metadata, &result); err != nil {
 		return nil, err
@@ -763,7 +763,7 @@ func (c *Client) ListAliases() ([]string, error) {
 	return result, nil
 }
 
-func (c *Client) UserAuthServerCert(name string) error {
+func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	if !c.scertDigestSet {
 		return fmt.Errorf(gettext.Gettext("No certificate on this connection"))
 	}
@@ -777,14 +777,16 @@ func (c *Client) UserAuthServerCert(name string) error {
 		Intermediates: c.scertIntermediates,
 	})
 	if err != nil {
-		fmt.Printf(gettext.Gettext("Certificate fingerprint: % x\n"), c.scertDigest)
-		fmt.Printf(gettext.Gettext("ok (y/n)? "))
-		line, err := shared.ReadStdin()
-		if err != nil {
-			return err
-		}
-		if len(line) < 1 || line[0] != 'y' && line[0] != 'Y' {
-			return fmt.Errorf(gettext.Gettext("Server certificate NACKed by user"))
+		if acceptCert == false {
+			fmt.Printf(gettext.Gettext("Certificate fingerprint: % x\n"), c.scertDigest)
+			fmt.Printf(gettext.Gettext("ok (y/n)? "))
+			line, err := shared.ReadStdin()
+			if err != nil {
+				return err
+			}
+			if len(line) < 1 || line[0] != 'y' && line[0] != 'Y' {
+				return fmt.Errorf(gettext.Gettext("Server certificate NACKed by user"))
+			}
 		}
 	}
 
@@ -1080,6 +1082,21 @@ func (c *Client) Delete(name string) (*Response, error) {
 	return c.delete(url, nil, Async)
 }
 
+func (c *Client) ServerStatus() (*shared.ServerState, error) {
+	ss := shared.ServerState{}
+
+	resp, err := c.GetServerConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(resp.Metadata, &ss); err != nil {
+		return nil, err
+	}
+
+	return &ss, nil
+}
+
 func (c *Client) ContainerStatus(name string, showLog bool) (*shared.ContainerState, error) {
 	ct := shared.ContainerState{}
 	query := url.Values{"log": []string{fmt.Sprintf("%v", showLog)}}
@@ -1151,11 +1168,6 @@ func (c *Client) PullFile(container string, p string) (int, int, os.FileMode, io
 	return uid, gid, mode, r.Body, nil
 }
 
-func (c *Client) SetRemotePwd(password string) (*Response, error) {
-	body := shared.Jmap{"config": shared.Jmap{"trust-password": password}}
-	return c.put("", body, Sync)
-}
-
 func (c *Client) MigrateTo(container string) (*Response, error) {
 	body := shared.Jmap{"migration": true}
 	return c.post(fmt.Sprintf("containers/%s", container), body, Async)
@@ -1217,19 +1229,24 @@ func (c *Client) WaitForSuccess(waitURL string) error {
 	return op.GetError()
 }
 
+func (c *Client) RestoreSnapshot(container string, snapshotName string, stateful bool) (*Response, error) {
+	body := shared.Jmap{"restore": snapshotName, "stateful": stateful}
+	return c.put(fmt.Sprintf("containers/%s", container), body, Async)
+}
+
 func (c *Client) Snapshot(container string, snapshotName string, stateful bool) (*Response, error) {
 	body := shared.Jmap{"name": snapshotName, "stateful": stateful}
 	return c.post(fmt.Sprintf("containers/%s/snapshots", container), body, Async)
 }
 
 func (c *Client) ListSnapshots(container string) ([]string, error) {
-	qUrl := fmt.Sprintf("containers/%s/snapshots", container)
+	qUrl := fmt.Sprintf("containers/%s/snapshots?recursion=1", container)
 	resp, err := c.get(qUrl)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []string
+	var result []shared.Jmap
 
 	if err := json.Unmarshal(resp.Metadata, &result); err != nil {
 		return nil, err
@@ -1237,28 +1254,42 @@ func (c *Client) ListSnapshots(container string) ([]string, error) {
 
 	names := []string{}
 
-	for _, url := range result {
-		// /1.0/containers/<name>/snapshots/<snapshot>
-		apart := strings.SplitN(url, "/", 6)
-		if len(apart) < 6 {
-			return nil, fmt.Errorf(gettext.Gettext("bad container url %s"), url)
+	for _, snapjmap := range result {
+		name, err := snapjmap.GetString("name")
+		if err != nil {
+			continue
 		}
-		version := apart[1]
-		cname := apart[3]
-		name := apart[5]
-
-		if cname != container || apart[2] != "containers" || apart[4] != "snapshots" {
-			return nil, fmt.Errorf(gettext.Gettext("bad container url %s"), url)
-		}
-
-		if version != shared.APIVersion {
-			return nil, fmt.Errorf(gettext.Gettext("bad version in container url"))
-		}
-
 		names = append(names, name)
 	}
 
 	return names, nil
+}
+
+func (c *Client) GetServerConfigString() ([]string, error) {
+	ss, err := c.ServerStatus()
+	var resp []string
+	if err != nil {
+		return resp, err
+	}
+
+	if ss.Auth == "untrusted" {
+		return resp, nil
+	}
+
+	if len(ss.Config) == 0 {
+		resp = append(resp, "No config variables set.")
+	}
+
+	for k, v := range ss.Config {
+		resp = append(resp, fmt.Sprintf("%s = %v", k, v))
+	}
+
+	return resp, nil
+}
+
+func (c *Client) SetServerConfig(key string, value string) (*Response, error) {
+	body := shared.Jmap{"config": shared.Jmap{key: value}}
+	return c.put("", body, Sync)
 }
 
 /*
