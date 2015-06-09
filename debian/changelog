@@ -1,3 +1,9 @@
+lxd (0.11-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.11)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 09 Jun 2015 19:18:56 +0200
+
 lxd (0.10-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.10)
