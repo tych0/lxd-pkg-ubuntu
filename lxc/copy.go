@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gosexy/gettext"
+
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
 )
@@ -61,8 +62,8 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 
 		baseImage = status.Config["volatile.baseImage"]
 
-		if status.State() == shared.RUNNING {
-			return fmt.Errorf(gettext.Gettext("copying running containers isn't supported at this time"))
+		if status.State() == shared.RUNNING && sourceName != destName {
+			return fmt.Errorf(gettext.Gettext("Changing the name of a running container during copy isn't supported."))
 		}
 
 		if !keepVolatile {

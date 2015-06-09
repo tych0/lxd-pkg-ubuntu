@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/gosexy/gettext"
-	"github.com/lxc/lxd"
-	"github.com/lxc/lxd/internal/gnuflag"
-	"github.com/lxc/lxd/shared"
 	"github.com/olekukonko/tablewriter"
 	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
+
+	"github.com/lxc/lxd"
+	"github.com/lxc/lxd/internal/gnuflag"
+	"github.com/lxc/lxd/shared"
 )
 
 type imageCmd struct{}
@@ -28,17 +29,9 @@ var imageEditHelp string = gettext.Gettext(
 	"### This is a yaml representation of the image properties.\n" +
 		"### Any line starting with a '# will be ignored.\n" +
 		"###\n" +
-		"### Each property is represented by thee lines:\n" +
-		"###\n" +
-		"###  The first is 'imagetype: ' followed by an integer.  0 means\n" +
-		"###  a short string, 1 means a long text value containing newlines.\n" +
-		"###\n" +
-		"###  This is followed by the key and value\n" +
-		"###\n" +
-		"###  An example would be:\n" +
-		"### - imagetype: 0\n" +
-		"###   key: os\n" +
-		"###   value: Ubuntu\n")
+		"### Each property is represented by a single line:\n" +
+		"### An example would be:\n" +
+		"###  description: My custom image\n")
 
 func (c *imageCmd) usage() string {
 	return gettext.Gettext(
@@ -52,6 +45,7 @@ func (c *imageCmd) usage() string {
 			"lxc image export [remote:]<image>\n" +
 			"lxc image info [remote:]<image>\n" +
 			"lxc image list [remote:] [filter]\n" +
+			"lxc image show [remote:]<image>\n" +
 			"\n" +
 			"Lists the images at specified remote, or local images.\n" +
 			"Filters are not yet supported.\n" +
@@ -220,7 +214,8 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			public = "yes"
 		}
 		fmt.Printf(gettext.Gettext("Size: %.2vMB\n"), float64(info.Size)/1024.0/1024.0)
-		fmt.Printf(gettext.Gettext("Architecture: %s\n"), arch_to_string(info.Architecture))
+		arch, _ := shared.ArchitectureName(info.Architecture)
+		fmt.Printf(gettext.Gettext("Architecture: %s\n"), arch)
 		fmt.Printf(gettext.Gettext("Public: %s\n"), public)
 		fmt.Printf(gettext.Gettext("Timestamps:\n"))
 		const layout = "2006/01/02 15:04 UTC"
@@ -287,7 +282,6 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		} else {
 			remote = ""
 		}
-		// XXX TODO if name is not "" we'll want to filter for just that image name
 
 		d, err := lxd.NewClient(config, remote)
 		if err != nil {
@@ -319,11 +313,6 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			image = inName
 		}
 
-		info, err := d.GetImageInfo(image)
-		if err != nil {
-			return err
-		}
-
 		if !terminal.IsTerminal(syscall.Stdin) {
 			contents, err := ioutil.ReadAll(os.Stdin)
 			if err != nil {
@@ -336,6 +325,11 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 				return err
 			}
 			return d.PutImageProperties(image, newdata)
+		}
+
+		info, err := d.GetImageInfo(image)
+		if err != nil {
+			return err
 		}
 
 		properties := info.Properties
@@ -361,24 +355,36 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		f.Write(data)
 		f.Close()
 		defer os.Remove(fname)
-		cmd := exec.Command(editor, fname)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err = cmd.Run()
-		if err != nil {
-			return err
+
+		for {
+			cmd := exec.Command(editor, fname)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err = cmd.Run()
+			if err != nil {
+				return err
+			}
+			contents, err := ioutil.ReadFile(fname)
+			if err != nil {
+				return err
+			}
+			newdata := shared.ImageProperties{}
+			err = yaml.Unmarshal(contents, &newdata)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, gettext.Gettext("YAML parse error %v\n"), err)
+				fmt.Printf("Press enter to play again ")
+				_, err := os.Stdin.Read(make([]byte, 1))
+				if err != nil {
+					return err
+				}
+
+				continue
+			}
+			err = d.PutImageProperties(image, newdata)
+			break
 		}
-		contents, err := ioutil.ReadFile(fname)
-		if err != nil {
-			return err
-		}
-		newdata := shared.ImageProperties{}
-		err = yaml.Unmarshal(contents, &newdata)
-		if err != nil {
-			return err
-		}
-		err = d.PutImageProperties(image, newdata)
+
 		return err
 
 	case "export":
@@ -410,6 +416,32 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			fmt.Printf("Output is in %s\n", outfile)
 		}
 		return nil
+
+	case "show":
+		if len(args) < 2 {
+			return errArgs
+		}
+		remote, inName := config.ParseRemoteAndContainer(args[1])
+		if inName == "" {
+			return errArgs
+		}
+		d, err := lxd.NewClient(config, remote)
+		if err != nil {
+			return err
+		}
+
+		image := dereferenceAlias(d, inName)
+		info, err := d.GetImageInfo(image)
+		if err != nil {
+			return err
+		}
+
+		properties := info.Properties
+
+		data, err := yaml.Marshal(&properties)
+		fmt.Printf("%s", data)
+		return err
+
 	default:
 		return fmt.Errorf(gettext.Gettext("Unknown image command %s"), args[0])
 	}
@@ -455,27 +487,6 @@ func findDescription(props map[string]string) string {
 	return ""
 }
 
-func arch_to_string(arch int) string {
-	switch arch {
-	case 1:
-		return "i686"
-	case 2:
-		return "x86_64"
-	case 3:
-		return "armv7l"
-	case 4:
-		return "aarch64"
-	case 5:
-		return "ppc"
-	case 6:
-		return "ppc64"
-	case 7:
-		return "ppc64le"
-	default:
-		return "x86_64"
-	}
-}
-
 func showImages(images []shared.ImageInfo) error {
 	data := [][]string{}
 	for _, image := range images {
@@ -491,7 +502,7 @@ func showImages(images []shared.ImageInfo) error {
 		}
 		const layout = "Jan 2, 2006 at 3:04pm (MST)"
 		uploaded := time.Unix(image.UploadDate, 0).Format(layout)
-		arch := arch_to_string(image.Architecture)
+		arch, _ := shared.ArchitectureName(image.Architecture)
 		data = append(data, []string{shortest, fp, public, description, arch, uploaded})
 	}
 

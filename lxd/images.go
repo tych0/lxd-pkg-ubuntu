@@ -15,8 +15,9 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/lxc/lxd/shared"
 	"gopkg.in/yaml.v2"
+
+	"github.com/lxc/lxd/shared"
 )
 
 const (
@@ -26,27 +27,6 @@ const (
 	COMPRESSION_LZMA
 	COMPRESSION_XZ
 )
-
-const (
-	ARCH_UNKNOWN                     = 0
-	ARCH_32BIT_INTEL_X86             = 1
-	ARCH_64BIT_INTEL_X86             = 2
-	ARCH_ARMV7_LITTLE_ENDIAN         = 3
-	ARCH_64BIT_ARMV8_LITTLE_ENDIAN   = 4
-	ARCH_32BIT_POWERPC_BIG_ENDIAN    = 5
-	ARCH_64BIT_POWERPC_BIG_ENDIAN    = 6
-	ARCH_64BIT_POWERPC_LITTLE_ENDIAN = 7
-)
-
-var architectures = map[string]int{
-	"i686":    ARCH_32BIT_INTEL_X86,
-	"x86_64":  ARCH_64BIT_INTEL_X86,
-	"armv7l":  ARCH_ARMV7_LITTLE_ENDIAN,
-	"aarch64": ARCH_64BIT_ARMV8_LITTLE_ENDIAN,
-	"ppc":     ARCH_32BIT_POWERPC_BIG_ENDIAN,
-	"ppc64":   ARCH_64BIT_POWERPC_BIG_ENDIAN,
-	"ppc64le": ARCH_64BIT_POWERPC_LITTLE_ENDIAN,
-}
 
 func getSize(f *os.File) (int64, error) {
 	fi, err := f.Stat()
@@ -94,6 +74,7 @@ type imageMetadata struct {
 	Architecture  string
 	Creation_date float64
 	Properties    map[string]interface{}
+	Templates     map[string]*TemplateEntry
 }
 
 func imagesPost(d *Daemon, r *http.Request) Response {
@@ -178,7 +159,7 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 		case COMPRESSION_GZIP:
 			args = append(args, "-zxf")
 		case COMPRESSION_BZ2:
-			args = append(args, "--jxf")
+			args = append(args, "-jxf")
 		case COMPRESSION_LZMA:
 			args = append(args, "--lzma", "-xf")
 		default:
@@ -199,11 +180,7 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 		return cleanup(err, imagefname)
 	}
 
-	arch := ARCH_UNKNOWN
-	_, exists := architectures[imageMeta.Architecture]
-	if exists {
-		arch = architectures[imageMeta.Architecture]
-	}
+	arch, _ := shared.ArchitectureId(imageMeta.Architecture)
 
 	tx, err := shared.DbBegin(d.db)
 	if err != nil {
@@ -338,7 +315,6 @@ func getImageMetadata(fname string) (*imageMetadata, error) {
 	}
 
 	return metadata, nil
-
 }
 
 func imagesGet(d *Daemon, r *http.Request) Response {
@@ -550,7 +526,7 @@ func imageGet(d *Daemon, r *http.Request) Response {
 }
 
 type imagePutReq struct {
-	Properties shared.ImageProperties `json:"properties"`
+	Properties map[string]string `json:"properties"`
 }
 
 func imagePut(d *Daemon, r *http.Request) Response {
@@ -561,15 +537,14 @@ func imagePut(d *Daemon, r *http.Request) Response {
 		return BadRequest(err)
 	}
 
+	imgInfo, err := dbImageGet(d.db, fingerprint, false)
+	if err != nil {
+		return SmartError(err)
+	}
+
 	tx, err := shared.DbBegin(d.db)
 	if err != nil {
 		return InternalError(err)
-	}
-
-	imgInfo, err := dbImageGet(d.db, fingerprint, false)
-	if err != nil {
-		tx.Rollback()
-		return SmartError(err)
 	}
 
 	_, err = tx.Exec(`DELETE FROM images_properties WHERE image_id=?`, imgInfo.Id)
@@ -579,8 +554,9 @@ func imagePut(d *Daemon, r *http.Request) Response {
 		tx.Rollback()
 		return InternalError(err)
 	}
-	for _, i := range imageRaw.Properties {
-		_, err = stmt.Exec(imgInfo.Id, i.Imagetype, i.Key, i.Value)
+
+	for key, value := range imageRaw.Properties {
+		_, err = stmt.Exec(imgInfo.Id, 0, key, value)
 		if err != nil {
 			tx.Rollback()
 			return InternalError(err)

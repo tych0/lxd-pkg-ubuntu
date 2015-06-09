@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/mattn/go-sqlite3"
+
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
-	"github.com/mattn/go-sqlite3"
 )
 
 type resp struct {
@@ -223,7 +224,7 @@ func SmartError(err error) Response {
 		return NotFound
 	case sql.ErrNoRows:
 		return NotFound
-	case NoSuchImageError:
+	case NoSuchObjectError:
 		return NotFound
 	case os.ErrPermission:
 		return Forbidden
