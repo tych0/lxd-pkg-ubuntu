@@ -8,13 +8,23 @@ import (
 	"os"
 	"time"
 
-	"github.com/lxc/lxd/shared"
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/lxc/lxd/shared"
 )
 
 var (
 	DbErrAlreadyDefined = fmt.Errorf("already exists")
-	NoSuchImageError    = errors.New("No such image")
+
+	/*
+	 * n.b. in the case of joins (and probably other) queries, we don't
+	 * get back sql.ErrNoRows when no rows are returned, even though we do
+	 * on selects without joins. Instead, you can use this error to
+	 * propagate up and generate proper 404s to the client when something
+	 * isn't found so we don't abuse sql.ErrNoRows any more than we
+	 * already do.
+	 */
+	NoSuchObjectError = errors.New("No such object")
 )
 
 type Profile struct {
@@ -23,7 +33,7 @@ type Profile struct {
 }
 type Profiles []Profile
 
-const DB_CURRENT_VERSION int = 7
+const DB_CURRENT_VERSION int = 8
 
 const CURRENT_SCHEMA string = `
 CREATE TABLE IF NOT EXISTS certificates (
@@ -181,6 +191,15 @@ func getSchema(db *sql.DB) (v int) {
 		return 0
 	}
 	return v
+}
+
+func updateFromV7(db *sql.DB) error {
+	stmt := `
+UPDATE config SET key='core.trust_password' WHERE key IN ('password', 'trust_password', 'trust-password', 'core.trust-password');
+DELETE FROM config WHERE key != 'core.trust_password';
+INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
+	_, err := db.Exec(stmt, 8)
+	return err
 }
 
 func updateFromV6(db *sql.DB) error {
@@ -545,6 +564,12 @@ func updateDb(db *sql.DB, prev_version int) error {
 			return err
 		}
 	}
+	if prev_version < 8 {
+		err = updateFromV7(db)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -730,7 +755,7 @@ func dbAliasGet(db *sql.DB, name string) (fingerprint string, err error) {
 	err = shared.DbQueryRowScan(db, q, inargs, outfmt)
 
 	if err == sql.ErrNoRows {
-		return "", NoSuchImageError
+		return "", NoSuchObjectError
 	}
 	if err != nil {
 		return "", err
@@ -784,7 +809,24 @@ func dbGetProfileConfig(db *sql.DB, name string) (map[string]string, error) {
 	outfmt := []interface{}{key, value}
 	results, err := shared.DbQueryScan(db, query, inargs, outfmt)
 	if err != nil {
-		return nil, err //SmartError will wrap this and make "not found" errors pretty
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		/*
+		 * If we didn't get any rows here, let's check to make sure the
+		 * profile really exists; if it doesn't, let's send back a 404.
+		 */
+		query := "SELECT id FROM profiles WHERE name=?"
+		var id int
+		results, err := shared.DbQueryScan(db, query, []interface{}{name}, []interface{}{id})
+		if err != nil {
+			return nil, err
+		}
+
+		if len(results) == 0 {
+			return nil, NoSuchObjectError
+		}
 	}
 
 	config := map[string]string{}
