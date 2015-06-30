@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/gosexy/gettext"
+	"github.com/chai2010/gettext-go/gettext"
 
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/internal/gnuflag"
@@ -59,7 +59,12 @@ func (c *infoCmd) run(config *lxd.Config, args []string) error {
 		fmt.Printf("Ips:\n")
 		foundone := false
 		for _, ip := range ct.Status.Ips {
-			fmt.Printf("  %s:\t %s\t%s\n", ip.Interface, ip.Protocol, ip.Address)
+			vethStr := ""
+			if ip.HostVeth != "" {
+				vethStr = fmt.Sprintf("\t%s", ip.HostVeth)
+			}
+
+			fmt.Printf("  %s:\t%s\t%s%s\n", ip.Interface, ip.Protocol, ip.Address, vethStr)
 			foundone = true
 		}
 		if !foundone {

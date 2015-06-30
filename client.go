@@ -21,8 +21,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/chai2010/gettext-go/gettext"
 	"github.com/gorilla/websocket"
-	"github.com/gosexy/gettext"
 	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/lxc/lxd/shared"
@@ -1010,11 +1010,6 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 				}
 
 				for {
-					ch := make(chan os.Signal)
-					signal.Notify(ch, syscall.SIGWINCH)
-					sig := <-ch
-
-					shared.Debugf("Received '%s signal', updating window geometry.\n", sig)
 					width, height, err := terminal.GetSize(syscall.Stdout)
 					if err != nil {
 						continue
@@ -1046,6 +1041,12 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 						shared.Debugf("got err writing %s", err)
 						break
 					}
+
+					ch := make(chan os.Signal)
+					signal.Notify(ch, syscall.SIGWINCH)
+					sig := <-ch
+
+					shared.Debugf("Received '%s signal', updating window geometry.\n", sig)
 				}
 
 				closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")

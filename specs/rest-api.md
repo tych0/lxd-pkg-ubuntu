@@ -371,6 +371,13 @@ Output:
                 'type': "disk",
                 'path': "/",
                 'source': "UUID=8f7fdf5e-dc60-4524-b9fe-634f82ac2fb6"}
+            },
+            "eth0": {
+                "type": "nic"
+                "parent": "lxcbr0",
+                "hwaddr": "00:16:3e:f4:e7:1c",
+                "name": "eth0",
+                "nictype": "bridged",
             }
         },
         'userdata': "SOME BASE64 BLOB",
@@ -379,10 +386,12 @@ Output:
                     'status_code': 103,
                     'ips': [{'interface': "eth0",
                              'protocol': "INET6",
-                             'address': "2001:470:b368:1020:1::2"},
+                             'address': "2001:470:b368:1020:1::2",
+                             'host_veth': "vethGMDIY9"},
                             {'interface': "eth0",
                              'protocol': "INET",
-                             'address': "172.16.15.30"}]},
+                             'address': "172.16.15.30",
+                             'host_veth': "vethGMDIY9"}]},
         'log': "lxc-checkpoint 1430925874.468 DEBUG    lxc_commands - commands.c:lxc_cmd_get_state:574 - 'u2' is in 'RUNNING' state
                 lxc-checkpoint 1430925874.468 ERROR    lxc_criu - criu.c:criu_version_ok:242 - No such file or directory - execing criu failed, is it installed?
                 ...",
@@ -646,14 +655,14 @@ The notification types are:
 This never returns. Each notification is sent as a separate JSON dict:
 
     {
-        'timestamp': 1415639996,                # Current timestamp
-        'type': "operations",                   # Notification type
-        'resource': "/1.0/operations/<uuid>",   # Resource URL
-        'metadata': {}                          # Extra resource or type specific metadata
+        'timestamp': "2015-06-09T19:07:24.379615253-06:00",                # Current timestamp
+        'type': "operations",                                              # Notification type
+        'resource': "/1.0/operations/<uuid>",                              # Resource URL
+        'metadata': {}                                                     # Extra resource or type specific metadata
     }
 
     {
-        'timestamp': 1415639996,
+        'timestamp': "2015-06-09T19:07:24.379615253-06:00",
         'type': "logging",
         'resource': "/1.0",
         'metadata' {'message': "Service started"}
@@ -689,12 +698,13 @@ In the http file upload case, The following headers may be set by the client:
 In the source container case, the following dict must be passed:
 
     {
-        "public": true,             # True or False
+        "public":   true,         # True or False
+        "filename": filename,     # Used for export
         "source": {
-            "type": "container",    # One of "container" or "snapshot"
+            "type": "container",  # One of "container" or "snapshot"
             "name": "abc"
         },
-        "properties": {             # Image properties
+        "properties": {           # Image properties
             "os": "Ubuntu",
         }
     }
@@ -723,9 +733,9 @@ Output:
         },
         'public': true,
         'size': 11031704,
-        'created_at': 1415639996,
-        'expires_at': 1415639996,
-        'uploaded_at': 1415639996
+        'created_at': "2015-06-09T19:07:24.379615253-06:00",
+        'expires_at': "2015-06-19T19:07:24.379615253-06:00",
+        'uploaded_at': "2015-06-09T19:07:24.379615253-06:00"
     }
 
 ### DELETE
@@ -921,15 +931,15 @@ Input (none at present):
 Return:
 
     {
-        'created_at': 1415639996,                   # Creation timestamp
-        'updated_at': 1415639996,                   # Last update timestamp
+        'created_at': "2015-06-09T19:07:24.379615253-06:00", # Creation timestamp
+        'updated_at': "2015-06-09T19:07:24.379615253-06:00", # Last update timestamp
         'status': "Running",
         'status_code': 103,
         'resources': {
-            'containers': ['/1.0/containers/1']     # List of affected resources
+            'containers': ['/1.0/containers/1']              # List of affected resources
         },
-        'metadata': {},                             # Extra information about the operation (action, target, ...)
-        'may_cancel': True                          # Whether it's possible to cancel the operation
+        'metadata': {},                                      # Extra information about the operation (action, target, ...)
+        'may_cancel': True                                   # Whether it's possible to cancel the operation
     }
 
 ### DELETE

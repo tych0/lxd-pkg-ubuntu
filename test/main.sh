@@ -78,6 +78,7 @@ cleanup() {
     set +x
 
     if [ -n "$LXD_INSPECT" ]; then
+        echo "To poke around, use:\n LXD_DIR=$LXD_DIR sudo -E $GOPATH/bin/lxc COMMAND --config ${LXD_CONF}"
         read -p "Tests Completed ($RESULT): hit enter to continue" x
     fi
     echo "==> Cleaning up"
@@ -98,13 +99,11 @@ cleanup() {
 
     # Apparently we need to wait a while for everything to die
     sleep 3
-    rm -Rf ${LXD_DIR}
-    rm -Rf ${LXD_CONF}
-    [ -n "${LXD2_DIR}" ] && wipe "${LXD2_DIR}"
-    [ -n "${LXD3_DIR}" ] && wipe "${LXD3_DIR}"
-    [ -n "${LXD4_DIR}" ] && wipe "${LXD4_DIR}"
-    [ -n "${LXD_MIGRATE_DIR}" ] && wipe "${LXD_MIGRATE_DIR}"
-    [ -n "${LXD_SERVERCONFIG_DIR}" ] && wipe "${LXD_SERVERCONFIG_DIR}"
+    for dir in ${LXD_CONF} ${LXD_DIR} ${LXD2_DIR} ${LXD3_DIR} ${LXD4_DIR} ${LXD_MIGRATE_DIR} ${LXD_SERVERCONFIG_DIR}; do
+        [ -n "${dir}" ] && wipe "${dir}"
+    done
+
+    rm -f devlxd-client || true
 
     echo ""
     echo ""
@@ -119,6 +118,7 @@ fi
 
 . ./basic.sh
 . ./concurrent.sh
+. ./exec.sh
 . ./database.sh
 . ./deps.sh
 . ./fuidshift.sh
@@ -132,6 +132,7 @@ fi
 . ./profiling.sh
 . ./fdleak.sh
 . ./database_update.sh
+. ./devlxd.sh
 
 if [ -n "$LXD_DEBUG" ]; then
     debug=--debug
@@ -148,7 +149,7 @@ spawn_lxd() {
   shift
   shift
   echo "==> Spawning lxd on $addr in $lxddir"
-  LXD_DIR=$lxddir lxd $debug --tcp $addr $extraargs $* 2>&1 | tee $lxddir/lxd.log &
+  (LXD_DIR=$lxddir lxd $debug --tcp $addr $extraargs $* 2>&1 & echo $! > $lxddir/lxd.pid) | tee $lxddir/lxd.log &
 
   echo "==> Confirming lxd on $addr is responsive"
   alive=0
@@ -198,8 +199,11 @@ test_remote_admin
 echo "==> TEST: basic usage"
 test_basic_usage
 
+echo "==> TEST: concurrent exec"
+#test_concurrent_exec
+
 echo "==> TEST: concurrent startup"
-test_concurrent
+#test_concurrent
 
 echo "==> TEST: lxc remote usage"
 test_remote_usage
@@ -215,6 +219,9 @@ test_config_profiles
 
 echo "==> TEST: server config"
 test_server_config
+
+echo "==> TEST: devlxd"
+test_devlxd
 
 if type fuidshift >/dev/null 2>&1; then
     echo "==> TEST: uidshift"
