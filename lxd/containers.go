@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,18 +101,17 @@ func doContainerGet(d *Daemon, cname string) (shared.ContainerInfo, Response) {
 }
 
 func doContainersGet(d *Daemon, recursion bool) (interface{}, error) {
-	q := fmt.Sprintf("SELECT name FROM containers WHERE type=? ORDER BY name")
-	inargs := []interface{}{cTypeRegular}
-	var container string
-	outfmt := []interface{}{container}
-	result, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	result, err := dbListContainers(d)
+	if err != nil {
+		return nil, err
+	}
+
 	result_string := make([]string, 0)
 	result_map := make([]shared.ContainerInfo, 0)
 	if err != nil {
 		return []string{}, err
 	}
-	for _, r := range result {
-		container := string(r[0].(string))
+	for _, container := range result {
 		if !recursion {
 			url := fmt.Sprintf("/%s/containers/%s", shared.APIVersion, container)
 			result_string = append(result_string, url)
@@ -1432,8 +1432,26 @@ func getIps(c *lxc.Container) []shared.Ip {
 		if err != nil {
 			continue
 		}
+
+		veth := ""
+
+		for i := 0; i < len(c.ConfigItem("lxc.network")); i++ {
+			nicName := c.RunningConfigItem(fmt.Sprintf("lxc.network.%d.name", i))[0]
+			if nicName != n {
+				continue
+			}
+
+			interfaceType := c.RunningConfigItem(fmt.Sprintf("lxc.network.%d.type", i))
+			if interfaceType[0] != "veth" {
+				continue
+			}
+
+			veth = c.RunningConfigItem(fmt.Sprintf("lxc.network.%d.veth.pair", i))[0]
+			break
+		}
+
 		for _, a := range addresses {
-			ip := shared.Ip{Interface: n, Address: a}
+			ip := shared.Ip{Interface: n, Address: a, HostVeth: veth}
 			if net.ParseIP(a).To4() == nil {
 				ip.Protocol = "IPV6"
 			} else {
@@ -1571,14 +1589,7 @@ func (d *lxdContainer) applyConfig(config map[string]string, fromProfile bool) e
 			cpuset := fmt.Sprintf("0-%d", vint-1)
 			err = d.c.SetConfigItem("lxc.cgroup.cpuset.cpus", cpuset)
 		case "limits.memory":
-			megabytes, err := strconv.Atoi(v)
-			if err != nil {
-				return err
-			}
-
-			bytes := strconv.Itoa(megabytes * 1024)
-
-			err = d.c.SetConfigItem("lxc.cgroup.memory.limit_in_bytes", bytes)
+			err = d.c.SetConfigItem("lxc.cgroup.memory.limit_in_bytes", v)
 
 		default:
 			if strings.HasPrefix(k, "user.") {
@@ -1839,7 +1850,14 @@ func (c *lxdContainer) applyIdmapSet() error {
 }
 
 func (c *lxdContainer) applyDevices() error {
-	for name, d := range c.devices {
+	var keys []string
+	for k := range c.devices {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, name := range keys {
+		d := c.devices[name]
 		if name == "type" {
 			continue
 		}
@@ -1860,13 +1878,18 @@ func (c *lxdContainer) applyDevices() error {
 
 func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 	d := &lxdContainer{}
-
 	d.daemon = daemon
-
 	ephem_int := -1
 	d.ephemeral = false
 	d.architecture = -1
 	d.id = -1
+
+	templateConfBase := "ubuntu"
+	templateConfDir := os.Getenv("LXC_TEMPLATE_CONFIG")
+	if templateConfDir == "" {
+		templateConfDir = "/usr/share/lxc/config"
+	}
+
 	q := "SELECT id, architecture, ephemeral FROM containers WHERE name=?"
 	arg1 := []interface{}{name}
 	arg2 := []interface{}{&d.id, &d.architecture, &ephem_int}
@@ -1906,13 +1929,13 @@ func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 		}
 	}
 
-	err = c.SetConfigItem("lxc.include", "/usr/share/lxc/config/ubuntu.common.conf")
+	err = c.SetConfigItem("lxc.include", fmt.Sprintf("%s/%s.common.conf", templateConfDir, templateConfBase))
 	if err != nil {
 		return nil, err
 	}
 
 	if !d.isPrivileged() {
-		err = c.SetConfigItem("lxc.include", "/usr/share/lxc/config/ubuntu.userns.conf")
+		err = c.SetConfigItem("lxc.include", fmt.Sprintf("%s/%s.userns.conf", templateConfDir, templateConfBase))
 		if err != nil {
 			return nil, err
 		}
@@ -1947,6 +1970,10 @@ func newLxdContainer(name string, daemon *Daemon) (*lxdContainer, error) {
 	}
 	err = c.SetConfigItem("lxc.tty", "0")
 	if err != nil {
+		return nil, err
+	}
+
+	if err := setupDevLxdMount(c); err != nil {
 		return nil, err
 	}
 
@@ -2416,16 +2443,17 @@ func snapshotDelete(d *Daemon, c *lxdContainer, name string) Response {
 var containerSnapshotCmd = Command{name: "containers/{name}/snapshots/{snapshotName}", get: snapshotHandler, post: snapshotHandler, delete: snapshotHandler}
 
 type execWs struct {
-	command      []string
-	container    *lxc.Container
-	rootUid      int
-	rootGid      int
-	options      lxc.AttachOptions
-	conns        map[int]*websocket.Conn
-	allConnected chan bool
-	interactive  bool
-	done         chan shared.OperationResult
-	fds          map[int]string
+	command          []string
+	container        *lxc.Container
+	rootUid          int
+	rootGid          int
+	options          lxc.AttachOptions
+	conns            map[int]*websocket.Conn
+	allConnected     chan bool
+	controlConnected chan bool
+	interactive      bool
+	done             chan shared.OperationResult
+	fds              map[int]string
 }
 
 func (s *execWs) Metadata() interface{} {
@@ -2450,6 +2478,12 @@ func (s *execWs) Connect(secret string, r *http.Request, w http.ResponseWriter) 
 			}
 
 			s.conns[fd] = conn
+
+			if fd == -1 {
+				s.controlConnected <- true
+				return nil
+			}
+
 			for i, c := range s.conns {
 				if i != -1 && c == nil {
 					return nil
@@ -2508,92 +2542,111 @@ func (s *execWs) Do() shared.OperationResult {
 		s.options.StderrFd = ttys[2].Fd()
 	}
 
-	go func() {
-		if s.interactive && s.conns[-1] != nil {
-			go func() {
-				for {
-					mt, r, err := s.conns[-1].NextReader()
-					if mt == websocket.CloseMessage {
-						break
-					}
+	controlExit := make(chan bool)
+	stdEof := make(chan bool)
 
+	if s.interactive {
+		go func() {
+			select {
+			case <-s.controlConnected:
+				break
+
+			case <-controlExit:
+				return
+			}
+
+			for {
+				mt, r, err := s.conns[-1].NextReader()
+				if mt == websocket.CloseMessage {
+					break
+				}
+
+				if err != nil {
+					shared.Debugf("got error getting next reader %s", err)
+					break
+				}
+
+				buf, err := ioutil.ReadAll(r)
+				if err != nil {
+					shared.Debugf("failed to read message %s", err)
+					break
+				}
+
+				command := shared.ContainerExecControl{}
+
+				if err := json.Unmarshal(buf, &command); err != nil {
+					shared.Debugf("failed to unmarshal control socket command: %s", err)
+					continue
+				}
+
+				if command.Command == "window-resize" {
+					winch_width, err := strconv.Atoi(command.Args["width"])
 					if err != nil {
-						shared.Debugf("got error getting next reader %s", err)
-						break
-					}
-
-					buf, err := ioutil.ReadAll(r)
-					if err != nil {
-						shared.Debugf("failed to read message %s", err)
-						break
-					}
-
-					command := shared.ContainerExecControl{}
-
-					if err := json.Unmarshal(buf, &command); err != nil {
-						shared.Debugf("failed to unmarshal control socket command: %s", err)
+						shared.Debugf("Unable to extract window width: %s", err)
 						continue
 					}
 
-					if command.Command == "window-resize" {
-						winch_width, err := strconv.Atoi(command.Args["width"])
-						if err != nil {
-							shared.Debugf("Unable to extract window width: %s", err)
-							continue
-						}
-
-						winch_height, err := strconv.Atoi(command.Args["height"])
-						if err != nil {
-							shared.Debugf("Unable to extract window height: %s", err)
-							continue
-						}
-
-						err = shared.SetSize(int(ptys[0].Fd()), winch_width, winch_height)
-						if err != nil {
-							shared.Debugf("Failed to set window size to: %dx%d", winch_width, winch_height)
-						}
+					winch_height, err := strconv.Atoi(command.Args["height"])
+					if err != nil {
+						shared.Debugf("Unable to extract window height: %s", err)
+						continue
 					}
 
+					err = shared.SetSize(int(ptys[0].Fd()), winch_width, winch_height)
 					if err != nil {
-						shared.Debugf("got error writing to writer %s", err)
-						break
+						shared.Debugf("Failed to set window size to: %dx%d", winch_width, winch_height)
 					}
 				}
-			}()
 
-			shared.WebsocketMirror(s.conns[0], ptys[0], ptys[0])
-		} else {
-			for i := 0; i < len(ttys); i++ {
-				go func(i int) {
-					if i == 0 {
-						<-shared.WebsocketRecvStream(ttys[i], s.conns[i])
-						ttys[i].Close()
-					} else {
-						<-shared.WebsocketSendStream(s.conns[i], ptys[i])
-						ptys[i].Close()
-					}
-				}(i)
+				if err != nil {
+					shared.Debugf("got error writing to writer %s", err)
+					break
+				}
 			}
+		}()
+
+		shared.WebsocketMirror(s.conns[0], ptys[0], ptys[0])
+	} else {
+		for i := 0; i < len(ttys); i++ {
+			go func(i int) {
+				if i == 0 {
+					<-shared.WebsocketRecvStream(ttys[i], s.conns[i])
+					ttys[i].Close()
+				} else {
+					<-shared.WebsocketSendStream(s.conns[i], ptys[i])
+					ptys[i].Close()
+					stdEof <- true
+				}
+			}(i)
 		}
+	}
 
-		result := runCommand(
-			s.container,
-			s.command,
-			s.options,
-		)
+	result := runCommand(
+		s.container,
+		s.command,
+		s.options,
+	)
 
-		for _, tty := range ttys {
-			tty.Close()
-		}
+	if !s.interactive {
+		ttys[0].Close()
+		ttys[1].Close()
+		ttys[2].Close()
+		<-stdEof
+	}
 
-		for _, pty := range ptys {
-			pty.Close()
-		}
+	for _, tty := range ttys {
+		tty.Close()
+	}
 
-		s.done <- result
-	}()
+	for _, pty := range ptys {
+		pty.Close()
+	}
 
-	return <-s.done
+	if s.interactive && s.conns[-1] == nil {
+		controlExit <- true
+	}
+
+	return result
 }
 
 type commandPostContent struct {
@@ -2651,10 +2704,11 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 			ws.conns[2] = nil
 		}
 		ws.allConnected = make(chan bool, 1)
+		ws.controlConnected = make(chan bool, 1)
 		ws.interactive = post.Interactive
 		ws.done = make(chan shared.OperationResult, 1)
 		ws.options = opts
-		for i := -1; i < len(ws.conns); i++ {
+		for i := -1; i < len(ws.conns)-1; i++ {
 			ws.fds[i], err = shared.RandomCryptoString()
 			if err != nil {
 				return InternalError(err)

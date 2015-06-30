@@ -918,7 +918,7 @@ func dbGetDevices(db *sql.DB, qName string, isprofile bool) (shared.Devices, err
 		return nil, err
 	}
 
-	devices := shared.Devices{} // That's basically a map[string]map[string]string
+	devices := shared.Devices{}
 	for _, r := range results {
 		id = r[0].(int)
 		name = r[1].(string)
@@ -932,4 +932,22 @@ func dbGetDevices(db *sql.DB, qName string, isprofile bool) (shared.Devices, err
 	}
 
 	return devices, nil
+}
+
+func dbListContainers(d *Daemon) ([]string, error) {
+	q := fmt.Sprintf("SELECT name FROM containers WHERE type=? ORDER BY name")
+	inargs := []interface{}{cTypeRegular}
+	var container string
+	outfmt := []interface{}{container}
+	result, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]string, 0)
+	for _, container := range result {
+		ret = append(ret, container[0].(string))
+	}
+
+	return ret, nil
 }

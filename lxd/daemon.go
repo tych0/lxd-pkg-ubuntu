@@ -33,11 +33,14 @@ type Daemon struct {
 	mux         *mux.Router
 	clientCerts []x509.Certificate
 	db          *sql.DB
+	BackingFs   string
 
 	localSockets  []net.Listener
 	remoteSockets []net.Listener
 
 	tlsconfig *tls.Config
+
+	devlxd *net.UnixListener
 }
 
 type Command struct {
@@ -186,6 +189,7 @@ func (d *Daemon) createCmd(version string, c Command) {
 	}
 
 	d.mux.HandleFunc(uri, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 
 		if d.isTrustedClient(r) {
 			shared.Debugf("handling %s %s", r.Method, r.URL.RequestURI())
@@ -271,6 +275,11 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 		return nil, err
 	}
 
+	d.BackingFs, err = shared.GetFilesystem(d.lxcpath)
+	if err != nil {
+		shared.Debugf("Error detecting backing fs: %s\n", err)
+	}
+
 	certf, keyf, err := readMyCert()
 	if err != nil {
 		return nil, err
@@ -288,6 +297,7 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 	d.mux = mux.NewRouter()
 
 	d.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		SyncResponse(true, []string{"/1.0"}).Render(w)
 	})
 
@@ -297,6 +307,7 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 
 	d.mux.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		shared.Debugf("sending top level 404: %s", r.URL)
+		w.Header().Set("Content-Type", "application/json")
 		NotFound.Render(w)
 	})
 
@@ -393,6 +404,10 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 
 	d.localSockets = localSockets
 	d.remoteSockets = remoteSockets
+	d.devlxd, err = createAndBindDevLxd()
+	if err != nil {
+		return nil, err
+	}
 
 	containersRestart(d)
 	containersWatch(d)
@@ -406,6 +421,11 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 			shared.Debugf(" - binding remote socket: %s\n", socket.Addr())
 			d.tomb.Go(func() error { return http.Serve(socket, d.mux) })
 		}
+
+		d.tomb.Go(func() error {
+			server := devLxdServer(d)
+			return server.Serve(d.devlxd)
+		})
 		return nil
 	})
 
@@ -434,6 +454,8 @@ func (d *Daemon) Stop() error {
 	for _, socket := range d.remoteSockets {
 		socket.Close()
 	}
+
+	d.devlxd.Close()
 
 	err := d.tomb.Wait()
 	if err == errStop {
