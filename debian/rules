@@ -11,7 +11,7 @@ export GOPATH := $(CURDIR)/dist/
 export PATH := $(PATH):$(GOPATH)/bin/
 
 %:
-	dh $@
+	dh $@ --with systemd
 
 override_dh_auto_build: ;
 
@@ -31,7 +31,7 @@ override_dh_install:
 
 override_dh_installinit:
 	dh_installinit
-	dh_systemd_enable -plxd --name=lxd
+	#dh_systemd_enable -plxd --name=lxd
 
 override_dh_auto_test:
 	# cd test && ./main.sh

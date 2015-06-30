@@ -1,3 +1,11 @@
+lxd (0.12-0ubuntu1) UNRELEASED; urgency=medium
+
+  * New upstream release (0.12)
+  * Bump open file limits to 65536 by default.
+  * Switch to socket activation for the systemd units.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 30 Jun 2015 17:25:47 -0400
+
 lxd (0.11-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.11)
