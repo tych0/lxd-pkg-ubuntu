@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -37,7 +38,6 @@ func getSize(f *os.File) (int64, error) {
 }
 
 func detectCompression(fname string) (int, string, error) {
-
 	f, err := os.Open(fname)
 	if err != nil {
 		return -1, "", err
@@ -70,50 +70,168 @@ func detectCompression(fname string) (int, string, error) {
 
 }
 
+func untarImage(imagefname string, destpath string) error {
+	compression, _, err := detectCompression(imagefname)
+	if err != nil {
+		return err
+	}
+
+	args := []string{"-C", destpath, "--numeric-owner"}
+	switch compression {
+	case COMPRESSION_TAR:
+		args = append(args, "-xf")
+	case COMPRESSION_GZIP:
+		args = append(args, "-zxf")
+	case COMPRESSION_BZ2:
+		args = append(args, "--jxf")
+	case COMPRESSION_LZMA:
+		args = append(args, "--lzma", "-xf")
+	default:
+		args = append(args, "-Jxf")
+	}
+	args = append(args, imagefname)
+
+	output, err := exec.Command("tar", args...).CombinedOutput()
+	if err != nil {
+		shared.Debugf("image unpacking failed\n")
+		shared.Debugf(string(output))
+		return err
+	}
+
+	return nil
+}
+
 type imageFromContainerPostReq struct {
-	Name       string            `json:"name"`
+	Filename   string            `json:"filename"`
 	Public     bool              `json:"public"`
 	Source     map[string]string `json:"source"`
 	Properties map[string]string `json:"properties"`
 }
 
 type imageMetadata struct {
-	Architecture  string
-	Creation_date float64
-	Properties    map[string]interface{}
-	Templates     map[string]*TemplateEntry
+	Architecture string                    `yaml:"architecture"`
+	CreationDate int64                     `yaml:"creation_date"`
+	ExpiryDate   int64                     `yaml:"expiry_date"`
+	Properties   map[string]interface{}    `yaml:"properties"`
+	Templates    map[string]*TemplateEntry `yaml:"templates"`
 }
 
-func imgPostContInfo(r *http.Request, req imageFromContainerPostReq, builddir string) (public int,
-	fingerprint string, arch int,
-	filename string, size int64,
-	properties map[string]string, err error) {
-	return 0, "", 0, "", 0, properties, fmt.Errorf("Not implemented")
+/*
+ * This function takes a container or snapshot from the local image server and
+ * exports it as an image.
+ */
+func imgPostContInfo(d *Daemon, r *http.Request, req imageFromContainerPostReq,
+	builddir string) (info shared.ImageInfo, err error) {
+
+	info.Properties = map[string]string{}
+	name := req.Source["name"]
+	ctype := req.Source["type"]
+	if ctype == "" || name == "" {
+		return info, fmt.Errorf("No source provided")
+	}
+
+	switch ctype {
+	case "snapshot":
+		if !shared.IsSnapshot(name) {
+			return info, fmt.Errorf("Not a snapshot")
+		}
+	case "container":
+		if shared.IsSnapshot(name) {
+			return info, fmt.Errorf("This is a snapshot")
+		}
+	default:
+		return info, fmt.Errorf("Bad type")
+	}
+
+	info.Filename = req.Filename
+	switch req.Public {
+	case true:
+		info.Public = 1
+	case false:
+		info.Public = 0
+	}
+
+	snap := ""
+	if ctype == "snapshot" {
+		fields := strings.SplitN(name, "/", 2)
+		if len(fields) != 2 {
+			return info, fmt.Errorf("Not a snapshot")
+		}
+		name = fields[0]
+		snap = fields[1]
+	}
+
+	c, err := newLxdContainer(name, d)
+	if err != nil {
+		return info, err
+	}
+
+	// Build the actual image file
+	tarfname := fmt.Sprintf("%s.tar", name)
+	tarpath := filepath.Join(builddir, tarfname)
+	tarfile, err := os.OpenFile(tarpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return info, err
+	}
+	if err := c.exportToTar(snap, tarfile); err != nil {
+		tarfile.Close()
+		return info, fmt.Errorf("imgPostContInfo: exportToTar failed: %s\n", err)
+	}
+	tarfile.Close()
+
+	args := []string{tarpath}
+	_, err = exec.Command("gzip", args...).CombinedOutput()
+	if err != nil {
+		shared.Debugf("image compression\n")
+		return info, err
+	}
+	gztarpath := fmt.Sprintf("%s.gz", tarpath)
+
+	sha256 := sha256.New()
+	tarf, err := os.Open(gztarpath)
+	if err != nil {
+		return info, err
+	}
+	info.Size, err = io.Copy(sha256, tarf)
+	tarf.Close()
+	if err != nil {
+		return info, err
+	}
+	info.Fingerprint = fmt.Sprintf("%x", sha256.Sum(nil))
+
+	/* rename the the file to the expected name so our caller can use it */
+	imagefname := filepath.Join(builddir, info.Fingerprint)
+	err = os.Rename(gztarpath, imagefname)
+	if err != nil {
+		return info, err
+	}
+
+	info.Architecture = c.architecture
+	info.Properties = req.Properties
+
+	return info, nil
 }
 
-func getImgPostInfo(r *http.Request, builddir string) (public int,
-	fingerprint string, arch int,
-	filename string, size int64,
-	properties map[string]string, err error) {
-
+func getImgPostInfo(d *Daemon, r *http.Request, builddir string) (info shared.ImageInfo,
+	err error) {
 	// Is this a container request?
 	decoder := json.NewDecoder(r.Body)
 	req := imageFromContainerPostReq{}
 	if err = decoder.Decode(&req); err == nil {
-		return imgPostContInfo(r, req, builddir)
+		return imgPostContInfo(d, r, req, builddir)
 	}
 
 	// ok we've got an image in the body
-	public, _ = strconv.Atoi(r.Header.Get("X-LXD-public"))
-	filename = r.Header.Get("X-LXD-filename")
+	info.Public, _ = strconv.Atoi(r.Header.Get("X-LXD-public"))
+	info.Filename = r.Header.Get("X-LXD-filename")
 	propHeaders := r.Header[http.CanonicalHeaderKey("X-LXD-properties")]
 
-	properties = map[string]string{}
+	info.Properties = map[string]string{}
 	if len(propHeaders) > 0 {
 		for _, ph := range propHeaders {
 			p, _ := url.ParseQuery(ph)
 			for pkey, pval := range p {
-				properties[pkey] = pval[0]
+				info.Properties[pkey] = pval[0]
 			}
 		}
 	}
@@ -121,7 +239,7 @@ func getImgPostInfo(r *http.Request, builddir string) (public int,
 	// Create a file for the tarball
 	tarf, err := ioutil.TempFile(builddir, "lxd_tar_")
 	if err != nil {
-		return 0, "", 0, "", 0, properties, err
+		return info, err
 	}
 
 	tarfname := tarf.Name()
@@ -132,35 +250,36 @@ func getImgPostInfo(r *http.Request, builddir string) (public int,
 	if err == nil {
 		size2, err = io.Copy(io.MultiWriter(tarf, sha256), r.Body)
 	}
-	size = size1 + size2
+	info.Size = size1 + size2
 	tarf.Close()
 	if err != nil {
-		return 0, "", 0, "", 0, properties, err
+		return info, err
 	}
 
-	fingerprint = fmt.Sprintf("%x", sha256.Sum(nil))
+	info.Fingerprint = fmt.Sprintf("%x", sha256.Sum(nil))
 	expectedFingerprint := r.Header.Get("X-LXD-fingerprint")
-	if expectedFingerprint != "" && fingerprint != expectedFingerprint {
-		err = fmt.Errorf("fingerprints don't match, got %s expected %s", fingerprint, expectedFingerprint)
-		return 0, "", 0, "", 0, properties, err
+	if expectedFingerprint != "" && info.Fingerprint != expectedFingerprint {
+		err = fmt.Errorf("fingerprints don't match, got %s expected %s", info.Fingerprint, expectedFingerprint)
+		return info, err
 	}
 
-	imagefname := fmt.Sprintf("%s/%s", builddir, fingerprint)
-	err = os.Rename(tarfname, imagefname)
+	imgfname := filepath.Join(builddir, info.Fingerprint)
+	err = os.Rename(tarfname, imgfname)
 	if err != nil {
-		return 0, "", 0, "", 0, properties, err
+		return info, err
 	}
 
 	var imageMeta *imageMetadata
-	imageMeta, err = getImageMetadata(imagefname)
+	imageMeta, err = getImageMetadata(imgfname)
 	if err != nil {
-		return 0, "", 0, "", 0, properties, err
+		return info, err
 	}
 
-	arch, _ = shared.ArchitectureId(imageMeta.Architecture)
+	info.Architecture, _ = shared.ArchitectureId(imageMeta.Architecture)
+	info.CreationDate = imageMeta.CreationDate
+	info.ExpiryDate = imageMeta.ExpiryDate
 
-	err = nil
-	return
+	return info, nil
 }
 
 func makeBtrfsSubvol(imagefname, subvol string) error {
@@ -171,30 +290,8 @@ func makeBtrfsSubvol(imagefname, subvol string) error {
 		return err
 	}
 
-	compression, _, err := detectCompression(imagefname)
+	err = untarImage(imagefname, subvol)
 	if err != nil {
-		return err
-	}
-
-	args := []string{"-C", subvol, "--numeric-owner"}
-	switch compression {
-	case COMPRESSION_TAR:
-		args = append(args, "-xf")
-	case COMPRESSION_GZIP:
-		args = append(args, "-zxf")
-	case COMPRESSION_BZ2:
-		args = append(args, "-jxf")
-	case COMPRESSION_LZMA:
-		args = append(args, "--lzma", "-xf")
-	default:
-		args = append(args, "-Jxf")
-	}
-	args = append(args, imagefname)
-
-	output, err = exec.Command("tar", args...).CombinedOutput()
-	if err != nil {
-		shared.Debugf("image unpacking failed\n")
-		shared.Debugf(string(output))
 		return err
 	}
 
@@ -202,12 +299,33 @@ func makeBtrfsSubvol(imagefname, subvol string) error {
 }
 
 func removeImgWorkdir(d *Daemon, builddir string) {
+	vgname, _, err := getServerConfigValue(d, "core.lvm_vg_name")
+	if err != nil {
+		shared.Debugf("Error checking server config: %v", err)
+	}
+
+	matches, _ := filepath.Glob(fmt.Sprintf("%s/*.lv", builddir))
+	if len(matches) > 0 {
+		if len(matches) > 1 {
+			shared.Debugf("Unexpected - more than one .lv file in builddir. using first: %v", matches)
+		}
+		lvsymlink := matches[0]
+		if lvpath, err := os.Readlink(lvsymlink); err != nil {
+			shared.Debugf("Error reading target of symlink '%s'", lvsymlink)
+		} else {
+			err = shared.LVMRemoveLV(vgname, filepath.Base(lvpath))
+			if err != nil {
+				shared.Debugf("Error removing LV '%s': %v", lvpath, err)
+			}
+		}
+	}
+
 	if d.BackingFs == "btrfs" {
 		/* cannot rm -rf /a if /a/b is a subvolume, so first delete subvolumes */
 		/* todo: find the .btrfs file under dir */
 		fnamelist, _ := shared.ReadDir(builddir)
 		for _, fname := range fnamelist {
-			subvol := fmt.Sprintf("%s/%s", builddir, fname)
+			subvol := filepath.Join(builddir, fname)
 			exec.Command("btrfs", "subvolume", "delete", subvol).Run()
 		}
 	}
@@ -216,11 +334,20 @@ func removeImgWorkdir(d *Daemon, builddir string) {
 	}
 }
 
-// We've got an image with the directory, create .btrfs or .lvm
+// We've got an image with the directory, create .btrfs or .lv
 func buildOtherFs(d *Daemon, builddir string, fp string) error {
+	vgname, vgnameIsSet, err := getServerConfigValue(d, "core.lvm_vg_name")
+	if err != nil {
+		return fmt.Errorf("Error checking server config: %v", err)
+	}
+
+	if vgnameIsSet {
+		return createImageLV(d, builddir, fp, vgname)
+	}
+
 	switch d.BackingFs {
 	case "btrfs":
-		imagefname := fmt.Sprintf("%s/%s", builddir, fp)
+		imagefname := filepath.Join(builddir, fp)
 		subvol := fmt.Sprintf("%s.btrfs", imagefname)
 		if err := makeBtrfsSubvol(imagefname, subvol); err != nil {
 			return err
@@ -229,20 +356,89 @@ func buildOtherFs(d *Daemon, builddir string, fp string) error {
 	return nil
 }
 
+func createImageLV(d *Daemon, builddir string, fingerprint string, vgname string) error {
+	imagefname := filepath.Join(builddir, fingerprint)
+	poolname, poolnameIsSet, err := getServerConfigValue(d, "core.lvm_thinpool_name")
+	if err != nil {
+		return fmt.Errorf("Error checking server config: %v", err)
+	}
+
+	if !poolnameIsSet {
+		poolname, err = shared.LVMCreateDefaultThinPool(vgname)
+		if err != nil {
+			return fmt.Errorf("Error creating LVM thin pool: %v", err)
+		}
+		err = setLVMThinPoolNameConfig(d, poolname)
+		if err != nil {
+			shared.Debugf("Error setting thin pool name: '%s'", err)
+			return fmt.Errorf("Error setting LVM thin pool config: %v", err)
+		}
+	}
+
+	lvpath, err := shared.LVMCreateThinLV(fingerprint, poolname, vgname)
+	if err != nil {
+		shared.Logf("Error from LVMCreateThinLV: '%v'", err)
+		return fmt.Errorf("Error Creating LVM LV for new image: %v", err)
+	}
+
+	err = os.Symlink(lvpath, fmt.Sprintf("%s.lv", imagefname))
+	if err != nil {
+		return err
+	}
+
+	output, err := exec.Command("mkfs.ext4", "-E", "nodiscard,lazy_itable_init=0,lazy_journal_init=0", lvpath).CombinedOutput()
+	if err != nil {
+		shared.Logf("Error output from mkfs.ext4: '%s'", output)
+		return fmt.Errorf("Error making filesystem on image LV: %v", err)
+	}
+
+	tempLVMountPoint, err := ioutil.TempDir(builddir, "tmp_lv_mnt")
+	if err != nil {
+		return err
+	}
+
+	output, err = exec.Command("mount", "-o", "discard", lvpath, tempLVMountPoint).CombinedOutput()
+	if err != nil {
+		shared.Logf("Error mounting image LV for untarring: '%s'", output)
+		return fmt.Errorf("Error mounting image LV: %v", err)
+
+	}
+
+	untar_err := untarImage(imagefname, tempLVMountPoint)
+
+	output, err = exec.Command("umount", tempLVMountPoint).CombinedOutput()
+	if err != nil {
+		shared.Logf("WARNING: could not unmount LV '%s' from '%s'. Will not remove. Error: %v", lvpath, tempLVMountPoint, err)
+		if untar_err == nil {
+			return err
+		} else {
+			return fmt.Errorf("Error unmounting '%s' during cleanup of error %v", tempLVMountPoint, untar_err)
+		}
+	}
+
+	return untar_err
+}
+
 // Copy imagefile and btrfs file out of the tmpdir
-func pullOutImagefiles(d *Daemon, builddir string, fp string) error {
-	imagefname := fmt.Sprintf("%s/%s", builddir, fp)
-	finalName := shared.VarPath("images", fp)
-	subvol := fmt.Sprintf("%s.btrfs", imagefname)
+func pullOutImagefiles(d *Daemon, builddir string, fingerprint string) error {
+	imagefname := filepath.Join(builddir, fingerprint)
+	finalName := shared.VarPath("images", fingerprint)
 
 	err := os.Rename(imagefname, finalName)
 	if err != nil {
 		return err
 	}
 
+	lvsymlink := fmt.Sprintf("%s.lv", imagefname)
+	if shared.PathExists(lvsymlink) {
+		dst := shared.VarPath("images", fmt.Sprintf("%s.lv", fingerprint))
+		return os.Rename(lvsymlink, dst)
+	}
+
 	switch d.BackingFs {
 	case "btrfs":
-		dst := shared.VarPath("images", fmt.Sprintf("%s.btrfs", fp))
+		subvol := fmt.Sprintf("%s.btrfs", imagefname)
+		dst := shared.VarPath("images", fmt.Sprintf("%s.btrfs", fingerprint))
 		if err := os.Rename(subvol, dst); err != nil {
 			return err
 		}
@@ -252,20 +448,20 @@ func pullOutImagefiles(d *Daemon, builddir string, fp string) error {
 }
 
 func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public int,
-	arch int, properties map[string]string) error {
-	tx, err := shared.DbBegin(d.db)
+	arch int, creation_date int64, expiry_date int64, properties map[string]string) error {
+	tx, err := dbBegin(d.db)
 	if err != nil {
 		return err
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO images (fingerprint, filename, size, public, architecture, upload_date) VALUES (?, ?, ?, ?, ?, strftime("%s"))`)
+	stmt, err := tx.Prepare(`INSERT INTO images (fingerprint, filename, size, public, architecture, creation_date, expiry_date, upload_date) VALUES (?, ?, ?, ?, ?, ?, ?, strftime("%s"))`)
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
 
-	result, err := stmt.Exec(fp, fname, sz, public, arch)
+	result, err := stmt.Exec(fp, fname, sz, public, arch, creation_date, expiry_date)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -300,7 +496,7 @@ func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public int,
 
 	}
 
-	if err := shared.TxCommit(tx); err != nil {
+	if err := txCommit(tx); err != nil {
 		return err
 	}
 
@@ -308,7 +504,6 @@ func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public int,
 }
 
 func imagesPost(d *Daemon, r *http.Request) Response {
-
 	dirname := shared.VarPath("images")
 	if err := os.MkdirAll(dirname, 0700); err != nil {
 		return InternalError(err)
@@ -324,32 +519,41 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 	defer removeImgWorkdir(d, builddir)
 
 	/* Grab all info from the web request */
-	public, fingerprint, arch, filename, size, properties, err := getImgPostInfo(r, builddir)
+
+	info, err := getImgPostInfo(d, r, builddir)
 	if err != nil {
 		return SmartError(err)
 	}
 
-	if err := buildOtherFs(d, builddir, fingerprint); err != nil {
-		return SmartError(err)
-	}
-
-	err = dbInsertImage(d, fingerprint, filename, size, public, arch, properties)
+	metadata, err := buildImageFromInfo(d, info, builddir)
 	if err != nil {
 		return SmartError(err)
 	}
+	return SyncResponse(true, metadata)
+}
 
-	metadata := make(map[string]string)
-	metadata["fingerprint"] = fingerprint
-	metadata["size"] = strconv.FormatInt(size, 10)
+func buildImageFromInfo(d *Daemon, info shared.ImageInfo, builddir string) (metadata map[string]string, err error) {
+	if err := buildOtherFs(d, builddir, info.Fingerprint); err != nil {
+		return nil, err
+	}
 
-	err = pullOutImagefiles(d, builddir, fingerprint)
+	err = dbInsertImage(d, info.Fingerprint, info.Filename, info.Size, info.Public, info.Architecture, info.CreationDate, info.ExpiryDate, info.Properties)
 	if err != nil {
-		return SmartError(err)
+		return nil, err
+	}
+
+	metadata = make(map[string]string)
+	metadata["fingerprint"] = info.Fingerprint
+	metadata["size"] = strconv.FormatInt(info.Size, 10)
+
+	err = pullOutImagefiles(d, builddir, info.Fingerprint)
+	if err != nil {
+		return nil, err
 	}
 
 	// now we can let the deferred cleanup fn remove the tmpdir
 
-	return SyncResponse(true, metadata)
+	return metadata, nil
 }
 
 func xzReader(r io.Reader) io.ReadCloser {
@@ -368,7 +572,6 @@ func xzReader(r io.Reader) io.ReadCloser {
 }
 
 func getImageMetadata(fname string) (*imageMetadata, error) {
-
 	metadataName := "metadata.yaml"
 
 	compression, _, err := detectCompression(fname)
@@ -433,7 +636,7 @@ func doImagesGet(d *Daemon, recursion bool, public bool) (interface{}, error) {
 	}
 	inargs := []interface{}{}
 	outfmt := []interface{}{name}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err := dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
 		return []string{}, err
 	}
@@ -459,14 +662,9 @@ func doImagesGet(d *Daemon, recursion bool, public bool) (interface{}, error) {
 	}
 }
 
-var imagesCmd = Command{name: "images", post: imagesPost, get: imagesGet}
+var imagesCmd = Command{name: "images", post: imagesPost, untrustedGet: true, get: imagesGet}
 
 func imageDelete(d *Daemon, r *http.Request) Response {
-	backing_fs, err := shared.GetFilesystem(d.lxcpath)
-	if err != nil {
-		return InternalError(err)
-	}
-
 	fingerprint := mux.Vars(r)["fingerprint"]
 
 	imgInfo, err := dbImageGet(d.db, fingerprint, false)
@@ -480,12 +678,28 @@ func imageDelete(d *Daemon, r *http.Request) Response {
 		shared.Debugf("Error deleting image file %s: %s\n", fname, err)
 	}
 
-	if backing_fs == "btrfs" {
+	vgname, vgnameIsSet, err := getServerConfigValue(d, "core.lvm_vg_name")
+	if err != nil {
+		return InternalError(fmt.Errorf("Error checking server config: %v", err))
+	}
+
+	if vgnameIsSet {
+		err = shared.LVMRemoveLV(vgname, imgInfo.Fingerprint)
+		if err != nil {
+			return InternalError(fmt.Errorf("Failed to remove deleted image LV: %v", err))
+		}
+
+		lvsymlink := fmt.Sprintf("%s.lv", fname)
+		err = os.Remove(lvsymlink)
+		if err != nil {
+			return InternalError(fmt.Errorf("Failed to remove symlink to deleted image LV: '%s': %v", lvsymlink, err))
+		}
+	} else if d.BackingFs == "btrfs" {
 		subvol := fmt.Sprintf("%s.btrfs", fname)
 		exec.Command("btrfs", "subvolume", "delete", subvol).Run()
 	}
 
-	tx, err := shared.DbBegin(d.db)
+	tx, err := dbBegin(d.db)
 	if err != nil {
 		return InternalError(err)
 	}
@@ -494,7 +708,7 @@ func imageDelete(d *Daemon, r *http.Request) Response {
 	_, _ = tx.Exec("DELETE FROM images_properties WHERE image_id?", imgInfo.Id)
 	_, _ = tx.Exec("DELETE FROM images WHERE id=?", imgInfo.Id)
 
-	if err := shared.TxCommit(tx); err != nil {
+	if err := txCommit(tx); err != nil {
 		return InternalError(err)
 	}
 
@@ -511,7 +725,7 @@ func doImageGet(d *Daemon, fingerprint string, public bool) (shared.ImageInfo, R
 	var key, value, name, desc string
 	inargs := []interface{}{imgInfo.Id}
 	outfmt := []interface{}{key, value}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err := dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
 		return shared.ImageInfo{}, SmartError(err)
 	}
@@ -525,7 +739,7 @@ func doImageGet(d *Daemon, fingerprint string, public bool) (shared.ImageInfo, R
 	q = "SELECT name, description FROM images_aliases WHERE image_id=?"
 	inargs = []interface{}{imgInfo.Id}
 	outfmt = []interface{}{name, desc}
-	results, err = shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err = dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
 		return shared.ImageInfo{}, InternalError(err)
 	}
@@ -637,7 +851,7 @@ func imagePut(d *Daemon, r *http.Request) Response {
 		return SmartError(err)
 	}
 
-	tx, err := shared.DbBegin(d.db)
+	tx, err := dbBegin(d.db)
 	if err != nil {
 		return InternalError(err)
 	}
@@ -658,7 +872,7 @@ func imagePut(d *Daemon, r *http.Request) Response {
 		}
 	}
 
-	if err := shared.TxCommit(tx); err != nil {
+	if err := txCommit(tx); err != nil {
 		return InternalError(err)
 	}
 
@@ -712,7 +926,7 @@ func aliasesGet(d *Daemon, r *http.Request) Response {
 	var name string
 	inargs := []interface{}{}
 	outfmt := []interface{}{name}
-	results, err := shared.DbQueryScan(d.db, q, inargs, outfmt)
+	results, err := dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
 		return BadRequest(err)
 	}
@@ -764,7 +978,7 @@ func doAliasGet(d *Daemon, name string, isTrustedClient bool) (shared.ImageAlias
 	var fingerprint, description string
 	arg1 := []interface{}{name}
 	arg2 := []interface{}{&fingerprint, &description}
-	err := shared.DbQueryRowScan(d.db, q, arg1, arg2)
+	err := dbQueryRowScan(d.db, q, arg1, arg2)
 	if err != nil {
 		return shared.ImageAlias{}, err
 	}
@@ -774,7 +988,7 @@ func doAliasGet(d *Daemon, name string, isTrustedClient bool) (shared.ImageAlias
 
 func aliasDelete(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	_, _ = shared.DbExec(d.db, "DELETE FROM images_aliases WHERE name=?", name)
+	_, _ = dbExec(d.db, "DELETE FROM images_aliases WHERE name=?", name)
 
 	return EmptySyncResponse
 }
@@ -809,7 +1023,7 @@ func imageExport(d *Daemon, r *http.Request) Response {
 		"Content-Disposition": fmt.Sprintf("inline;filename=%s", filename),
 	}
 
-	return FileResponse(r, path, filename, headers)
+	return FileResponse(r, path, filename, headers, false)
 }
 
 func imageSecret(d *Daemon, r *http.Request) Response {
