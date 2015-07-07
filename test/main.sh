@@ -121,6 +121,7 @@ fi
 . ./exec.sh
 . ./database.sh
 . ./deps.sh
+. ./filemanip.sh
 . ./fuidshift.sh
 . ./migration.sh
 . ./remote.sh
@@ -133,6 +134,7 @@ fi
 . ./fdleak.sh
 . ./database_update.sh
 . ./devlxd.sh
+. ./lvm.sh
 
 if [ -n "$LXD_DEBUG" ]; then
     debug=--debug
@@ -200,10 +202,10 @@ echo "==> TEST: basic usage"
 test_basic_usage
 
 echo "==> TEST: concurrent exec"
-#test_concurrent_exec
+test_concurrent_exec
 
 echo "==> TEST: concurrent startup"
-#test_concurrent
+test_concurrent
 
 echo "==> TEST: lxc remote usage"
 test_remote_usage
@@ -220,6 +222,9 @@ test_config_profiles
 echo "==> TEST: server config"
 test_server_config
 
+echo "==> TEST: filemanip"
+test_filemanip
+
 echo "==> TEST: devlxd"
 test_devlxd
 
@@ -232,6 +237,13 @@ fi
 
 echo "==> TEST: migration"
 test_migration
+
+if [ -n "$TRAVIS_PULL_REQUEST" ]; then
+    echo "===> SKIP: lvm backing (no loop device on Travis)"
+else
+    echo "==> TEST: lvm backing"
+    test_lvm
+fi
 
 curversion=`dpkg -s lxc | awk '/^Version/ { print $2 }'`
 if dpkg --compare-versions "$curversion" gt 1.1.2-0ubuntu3; then

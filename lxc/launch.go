@@ -21,7 +21,7 @@ func (c *launchCmd) usage() string {
 	return gettext.Gettext(
 		"Launch a container from a particular image.\n" +
 			"\n" +
-			"lxc launch <image> [<name>] [--ephemeral|-e] [--profile|-p <profile>...]\n" +
+			"lxc launch [remote:]<image> [remote:][<name>] [--ephemeral|-e] [--profile|-p <profile>...]\n" +
 			"\n" +
 			"Launches a container using the specified image and name.\n" +
 			"\n" +
@@ -41,7 +41,6 @@ func (c *launchCmd) flags() {
 }
 
 func (c *launchCmd) run(config *lxd.Config, args []string) error {
-
 	if len(args) > 2 || len(args) < 1 {
 		return errArgs
 	}

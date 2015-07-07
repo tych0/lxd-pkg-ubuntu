@@ -34,10 +34,12 @@ all:	install
 
 install:
 	go install ./proto
+	go install ./jsonpb
 	go install ./protoc-gen-go
 
 test:
 	go test ./proto
+	go test ./jsonpb
 	make -C protoc-gen-go/testdata test
 
 clean:
@@ -50,3 +52,4 @@ regenerate:
 	make -C protoc-gen-go/descriptor regenerate
 	make -C protoc-gen-go/plugin regenerate
 	make -C proto/testdata regenerate
+	make -C jsonpb/jsonpb_test_proto regenerate

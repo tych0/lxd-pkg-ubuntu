@@ -1,3 +1,14 @@
+gen_third_cert() {
+	[ -f $LXD_CONF/client3.crt ] && return
+	mv $LXD_CONF/client.crt $LXD_CONF/client.crt.bak
+	mv $LXD_CONF/client.key $LXD_CONF/client.key.bak
+	lxc list > /dev/null 2>&1
+	mv $LXD_CONF/client.crt $LXD_CONF/client3.crt
+	mv $LXD_CONF/client.key $LXD_CONF/client3.key
+	mv $LXD_CONF/client.crt.bak $LXD_CONF/client.crt
+	mv $LXD_CONF/client.key.bak $LXD_CONF/client.key
+}
+
 test_basic_usage() {
   if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
     if [ -e "$LXD_TEST_IMAGE" ]; then
@@ -41,6 +52,30 @@ test_basic_usage() {
   # Test container copy
   lxc copy bar foo
   lxc delete foo
+
+  # gen untrusted cert
+  gen_third_cert
+
+  # Test container publish
+  lxc publish bar --alias=foo-image prop1=val1
+  lxc image show foo-image | grep val1
+  curl -k -s --cert $LXD_CONF/client3.crt --key $LXD_CONF/client3.key -X GET $BASEURL/1.0/images | grep "/1.0/images/" && false
+  lxc image delete foo-image
+
+  # Test public images
+  lxc publish --public bar --alias=foo-image2
+  curl -k -s --cert $LXD_CONF/client3.crt --key $LXD_CONF/client3.key -X GET $BASEURL/1.0/images | grep "/1.0/images/"
+  lxc image delete foo-image2
+
+  # Test snapshot publish
+  lxc snapshot bar
+  lxc publish bar/snap0 --alias foo
+  lxc init foo bar2
+  lxc list | grep bar2
+  lxc delete bar2
+  lxc image delete foo
+
+  # Delete the bar container we've used for several tests
   lxc delete bar
 
   # Test randomly named container creation
@@ -72,7 +107,7 @@ test_basic_usage() {
   # cycle it a few times
   lxc start foo
   mac1=$(lxc exec foo cat /sys/class/net/eth0/address)
-  lxc stop foo  --force # stop is hanging
+  lxc stop foo --force # stop is hanging
   lxc start foo
   mac2=$(lxc exec foo cat /sys/class/net/eth0/address)
 
