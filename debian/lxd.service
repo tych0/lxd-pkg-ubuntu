@@ -6,6 +6,8 @@ Requires=cgmanager.service lxc.service lxd-unix.socket lxd-tcp.socket
 [Service]
 ExecStart=/usr/bin/lxd --group lxd --tcp [::]:8443
 KillMode=process
+TimeoutStopSec=40
+KillSignal=SIGPWR
 Restart=on-failure
 LimitNOFILE=65536
 

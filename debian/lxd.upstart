@@ -4,6 +4,8 @@ author "Stéphane Graber <stgraber@ubuntu.com>"
 start on started lxc
 stop on runlevel [06]
 limit nofile 65536 65536
+kill signal SIGPWR
+kill timeout 40
 
 respawn
 

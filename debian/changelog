@@ -1,3 +1,13 @@
+lxd (0.13-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.13)
+  * Default to shutting down all containers on stop under systemd and upstart.
+    This isn't yet ideal as unfortunately that means all containers will
+    be bounced on service restart. Ideally, SIGPWR would only be sent to
+    LXD on host shutdown and SIGTERM would be sent the rest of the time.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 07 Jul 2015 18:27:32 -0400
+
 lxd (0.12-0ubuntu2) wily; urgency=medium
 
   * Cherry-pick commit disabling /dev/lxd on gccgo for now.
