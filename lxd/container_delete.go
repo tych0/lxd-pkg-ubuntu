@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 
 	"github.com/gorilla/mux"
 	"github.com/lxc/lxd/shared"
@@ -13,7 +12,7 @@ import (
 func removeContainerPath(d *Daemon, name string) error {
 	cpath := shared.VarPath("lxc", name)
 
-	backing_fs, err := shared.GetFilesystem(cpath)
+	backingFs, err := shared.GetFilesystem(cpath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -29,18 +28,15 @@ func removeContainerPath(d *Daemon, name string) error {
 	}
 
 	if vgnameIsSet {
-		output, err := exec.Command("umount", cpath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to unmount container path '%s'.\nError: %v\nOutput: %s", cpath, err, output)
-		}
-
 		err = shared.LVMRemoveLV(vgname, name)
 		if err != nil {
 			return fmt.Errorf("failed to remove deleted container LV: %v", err)
 		}
 
-	} else if backing_fs == "btrfs" {
-		exec.Command("btrfs", "subvolume", "delete", cpath).Run()
+	} else if backingFs == "btrfs" && btrfsIsSubvolume(cpath) {
+		if err := btrfsDeleteSubvol(cpath); err != nil {
+			return err
+		}
 	}
 
 	err = os.RemoveAll(cpath)
@@ -70,7 +66,7 @@ func removeContainer(d *Daemon, name string) error {
 
 func containerDelete(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	_, err := dbGetContainerId(d.db, name)
+	_, err := dbGetContainerID(d.db, name)
 	if err != nil {
 		return SmartError(err)
 	}

@@ -14,59 +14,6 @@ import (
 	"github.com/lxc/lxd/shared"
 )
 
-func btrfsCmdIsInstalled() bool {
-	/*
-	 * Returns true if the "btrfs" tool is in PATH else false.
-	 *
-	 * TODO: Move this to the main code somewhere and call it once?
-	 */
-	out, err := exec.LookPath("btrfs")
-	if err != nil || len(out) == 0 {
-		return false
-	}
-
-	return true
-}
-
-func btrfsIsSubvolume(subvolPath string) bool {
-	/*
-	 * Returns true if the given Path is a btrfs subvolume else false.
-	 */
-	if !btrfsCmdIsInstalled() {
-		return false
-	}
-
-	out, err := exec.Command("btrfs", "subvolume", "show", subvolPath).CombinedOutput()
-	if err != nil || strings.HasPrefix(string(out), "ERROR: ") {
-		return false
-	}
-
-	return true
-}
-
-func btrfsSnapshot(source string, dest string, readonly bool) (string, error) {
-	/*
-	 * Creates a snapshot of "source" to "dest"
-	 * the result will be readonly if "readonly" is True.
-	 */
-	var out []byte
-	var err error
-	if readonly {
-		out, err = exec.Command("btrfs", "subvolume", "snapshot", "-r", source, dest).CombinedOutput()
-	} else {
-		out, err = exec.Command("btrfs", "subvolume", "snapshot", source, dest).CombinedOutput()
-	}
-
-	return string(out), err
-}
-
-func btrfsCopyImage(hash string, name string, d *Daemon) (string, error) {
-	dest := shared.VarPath("lxc", name)
-	source := fmt.Sprintf("%s.btrfs", shared.VarPath("images", hash))
-
-	return btrfsSnapshot(source, dest, false)
-}
-
 func extractImage(hash string, name string, d *Daemon) error {
 	/*
 	 * We want to use archive/tar for this, but that doesn't appear
@@ -75,33 +22,16 @@ func extractImage(hash string, name string, d *Daemon) error {
 	dpath := shared.VarPath("lxc", name)
 	imagefile := shared.VarPath("images", hash)
 
-	compression, _, err := detectCompression(imagefile)
+	err := untar(imagefile, dpath)
 	if err != nil {
-		shared.Logf("Unkown compression type: %s", err)
-		removeContainer(d, name)
 		return err
 	}
 
-	args := []string{"-C", dpath, "--numeric-owner"}
-	switch compression {
-	case COMPRESSION_TAR:
-		args = append(args, "-xf")
-	case COMPRESSION_GZIP:
-		args = append(args, "-zxf")
-	case COMPRESSION_BZ2:
-		args = append(args, "--jxf")
-	case COMPRESSION_LZMA:
-		args = append(args, "--lzma", "-xf")
-	default:
-		args = append(args, "-Jxf")
-	}
-	args = append(args, imagefile)
-
-	output, err := exec.Command("tar", args...).Output()
-	if err != nil {
-		shared.Debugf("Untar of image: Output %s\nError %s\n", output, err)
-		removeContainer(d, name)
-		return err
+	if shared.PathExists(imagefile + ".rootfs") {
+		err := untar(imagefile+".rootfs", dpath+"/rootfs/")
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -178,7 +108,7 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 	var err error
 	var run func() shared.OperationResult
 
-	backing_fs, err := shared.GetFilesystem(d.lxcpath)
+	backingFs, err := shared.GetFilesystem(d.lxcpath)
 	if err != nil {
 		return InternalError(err)
 	}
@@ -252,11 +182,10 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 
 	if vgnameIsSet && shared.PathExists(fmt.Sprintf("%s.lv", shared.VarPath("images", hash))) {
 		run = shared.OperationWrap(func() error {
-			srcLVPath := fmt.Sprintf("/dev/%s/%s", vgname, hash)
 
-			snapshotLVPath, err := shared.LVMCreateSnapshotLV(name, hash, vgname)
+			lvpath, err := shared.LVMCreateSnapshotLV(name, hash, vgname)
 			if err != nil {
-				return fmt.Errorf("Error creating snapshot of source volume '%s'", srcLVPath)
+				return fmt.Errorf("Error creating snapshot of source LV '%s/%s': %s", vgname, hash, err)
 			}
 
 			destPath := shared.VarPath("lxc", name)
@@ -265,19 +194,27 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 				return fmt.Errorf("Error creating container directory: %v", err)
 			}
 
-			output, err := exec.Command("mount", "-o", "discard", snapshotLVPath, destPath).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("Error mounting snapshot LV: %v\noutput:'%s'", err, output)
-			}
-
 			if !c.isPrivileged() {
-				return shiftRootfs(c, name, d)
+				output, err := exec.Command("mount", "-o", "discard", lvpath, destPath).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("Error mounting snapshot LV: %v\noutput:'%s'", err, output)
+				}
+
+				if err = shiftRootfs(c, c.name, d); err != nil {
+					return fmt.Errorf("Error in shiftRootfs: %v", err)
+				}
+
+				cpath := shared.VarPath("lxc", c.name)
+				output, err = exec.Command("umount", cpath).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("Error unmounting '%s' after shiftRootfs: %v", cpath, err)
+				}
 			}
 
 			return nil
 		})
 
-	} else if backing_fs == "btrfs" && shared.PathExists(fmt.Sprintf("%s.btrfs", shared.VarPath("images", hash))) {
+	} else if backingFs == "btrfs" && shared.PathExists(fmt.Sprintf("%s.btrfs", shared.VarPath("images", hash))) {
 		run = shared.OperationWrap(func() error {
 			if _, err := btrfsCopyImage(hash, name, d); err != nil {
 				return err
@@ -413,8 +350,10 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 	}
 
 	args := migration.MigrationSinkArgs{
-		Url:       req.Source.Operation,
-		Dialer:    websocket.Dialer{TLSClientConfig: config},
+		Url: req.Source.Operation,
+		Dialer: websocket.Dialer{
+			TLSClientConfig: config,
+			NetDial:         shared.RFC3493Dialer},
 		Container: c.c,
 		Secrets:   req.Source.Websockets,
 		IdMapSet:  c.idmapset,

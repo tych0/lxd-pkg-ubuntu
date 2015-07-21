@@ -11,14 +11,23 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"math/big"
 	"net"
 	"os"
+	"os/user"
 	"path"
 	"time"
 )
+
+// CertInfo is the representation of a Certificate in the API.
+type CertInfo struct {
+	Certificate string `json:"certificate"`
+	Fingerprint string `json:"fingerprint"`
+	Type        string `json:"type"`
+}
 
 /*
  * Generate a list of names for which the certificate will be valid.
@@ -105,10 +114,27 @@ func GenCert(certf string, keyf string) error {
 		return err
 	}
 
+	userEntry, err := user.Current()
+	var username string
+	if err == nil {
+		username = userEntry.Username
+		if username == "" {
+			username = "UNKNOWN"
+		}
+	} else {
+		username = "UNKNOWN"
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "UNKNOWN"
+	}
+
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			Organization: []string{"linuxcontainers.org"},
+			CommonName:   fmt.Sprintf("%s@%s", username, hostname),
 		},
 		NotBefore: validFrom,
 		NotAfter:  validTo,

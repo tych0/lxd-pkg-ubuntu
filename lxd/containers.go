@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -155,7 +154,7 @@ func containerWatchEphemeral(c *lxdContainer) {
 		c.c.Wait(lxc.RUNNING, 1*time.Second)
 		c.c.Wait(lxc.STOPPED, -1*time.Second)
 
-		_, err := dbGetContainerId(c.daemon.db, c.name)
+		_, err := dbGetContainerID(c.daemon.db, c.name)
 		if err != nil {
 			return
 		}
@@ -222,6 +221,9 @@ func containersRestart(d *Daemon) error {
 			return err
 		}
 
+		if err = activateStorage(d, container); err != nil {
+			return err
+		}
 		container.c.Start()
 	}
 
@@ -257,6 +259,9 @@ func containersShutdown(d *Daemon) error {
 			go func() {
 				container.c.Shutdown(time.Second * 30)
 				container.c.Stop()
+				if err = deactivateStorage(d, container); err != nil {
+					shared.Logf("Error deactivating storage after container stop: %v", err)
+				}
 				wg.Done()
 			}()
 		}
@@ -281,7 +286,7 @@ func containerDeleteSnapshots(d *Daemon, cname string) error {
 
 	var ids []int
 
-	backing_fs, err := shared.GetFilesystem(shared.VarPath("lxc", cname))
+	backingFs, err := shared.GetFilesystem(shared.VarPath("lxc", cname))
 	if err != nil && !os.IsNotExist(err) {
 		shared.Debugf("Error cleaning up snapshots: %s\n", err)
 		return err
@@ -293,8 +298,8 @@ func containerDeleteSnapshots(d *Daemon, cname string) error {
 		ids = append(ids, id)
 		cdir := shared.VarPath("lxc", cname, "snapshots", sname)
 
-		if backing_fs == "btrfs" {
-			exec.Command("btrfs", "subvolume", "delete", cdir).Run()
+		if backingFs == "btrfs" {
+			btrfsDeleteSubvol(cdir)
 		}
 		os.RemoveAll(cdir)
 	}
@@ -427,7 +432,7 @@ func (d *lxdContainer) exportToTar(snap string, w io.Writer) error {
 	cDir := shared.VarPath("lxc", d.name)
 
 	// Path inside the tar image is the pathname starting after cDir
-	offset := len(cDir)
+	offset := len(cDir) + 1
 
 	fnam := filepath.Join(cDir, "metadata.yaml")
 	writeToTar := func(path string, fi os.FileInfo, err error) error {
