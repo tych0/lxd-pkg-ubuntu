@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -59,6 +57,20 @@ func IsDir(name string) bool {
 	return stat.IsDir()
 }
 
+func IsMountPoint(name string) bool {
+	stat, err := os.Stat(name)
+	if err != nil {
+		return false
+	}
+
+	rootStat, err := os.Lstat(name + "/..")
+	if err != nil {
+		return false
+	}
+	// If the directory has the same device as parent, then it's not a mountpoint.
+	return stat.Sys().(*syscall.Stat_t).Dev != rootStat.Sys().(*syscall.Stat_t).Dev
+}
+
 // VarPath returns the provided path elements joined by a slash and
 // appended to the end of $LXD_DIR, which defaults to /var/lib/lxd.
 func VarPath(path ...string) string {
@@ -85,26 +97,26 @@ func LogPath(path ...string) string {
 	return filepath.Join(items...)
 }
 
-func ParseLXDFileHeaders(headers http.Header) (uid int, gid int, mode os.FileMode, err error) {
-	uid, err = strconv.Atoi(headers.Get("X-LXD-uid"))
+func ParseLXDFileHeaders(headers http.Header) (uid int, gid int, mode os.FileMode) {
+	uid, err := strconv.Atoi(headers.Get("X-LXD-uid"))
 	if err != nil {
-		return 0, 0, 0, err
+		uid = 0
 	}
 
 	gid, err = strconv.Atoi(headers.Get("X-LXD-gid"))
 	if err != nil {
-		return 0, 0, 0, err
+		gid = 0
 	}
 
 	/* Allow people to send stuff with a leading 0 for octal or a regular
 	 * int that represents the perms when redered in octal. */
 	rawMode, err := strconv.ParseInt(headers.Get("X-LXD-mode"), 0, 0)
 	if err != nil {
-		return 0, 0, 0, err
+		rawMode = 0644
 	}
 	mode = os.FileMode(rawMode)
 
-	return uid, gid, mode, nil
+	return uid, gid, mode
 }
 
 func ReadToJSON(r io.Reader, req interface{}) error {
@@ -114,10 +126,6 @@ func ReadToJSON(r io.Reader, req interface{}) error {
 	}
 
 	return json.Unmarshal(buf, req)
-}
-
-func GenerateFingerprint(cert *x509.Certificate) string {
-	return fmt.Sprintf("% x", sha256.Sum256(cert.Raw))
 }
 
 func ReaderToChannel(r io.Reader) <-chan []byte {
@@ -399,4 +407,13 @@ func MkdirAllOwner(path string, perm os.FileMode, uid int, gid int) error {
 		return err
 	}
 	return nil
+}
+
+func IntInSlice(key int, list []int) bool {
+	for _, entry := range list {
+		if entry == key {
+			return true
+		}
+	}
+	return false
 }

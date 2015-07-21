@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import uuid
 
 # External dependencies:
 # - gnupg
@@ -45,6 +46,32 @@ def find_on_path(command):
     return False
 
 
+def report_download(blocks_read, block_size, total_size):
+    size_read = blocks_read * block_size
+    percent = size_read/total_size*100
+    if percent > 100:
+        return
+
+    print("Progress: %.0f %%" % percent, end='\r')
+
+
+def local_architecture():
+    try:
+        import apt_pkg
+        apt_pkg.init()
+        return apt_pkg.config.find("APT::Architecture").lower()
+    except:
+        arch_tables = {'x86_64': "amd64",
+                       'i686': "i386",
+                       'armv7l': "armhf",
+                       'aarch64': "arm64",
+                       'ppc': "powerpc",
+                       'ppc64le': "ppc64el"}
+
+        kernel_arch = os.uname().machine
+
+        return arch_tables[kernel_arch]
+
 class UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, path):
         http.client.HTTPConnection.__init__(self, 'localhost')
@@ -60,14 +87,14 @@ class LXD(object):
     def __init__(self, path):
         self.lxd = UnixHTTPConnection(path)
 
-    def rest_call(self, path, data=None, method="GET"):
+    def rest_call(self, path, data=None, method="GET", headers={}):
         if method == "GET" and data:
             self.lxd.request(
                 method,
                 "%s?%s" % "&".join(["%s=%s" % (key, value)
-                                    for key, value in data.items()]))
+                                    for key, value in data.items()]), headers)
         else:
-            self.lxd.request(method, path, data)
+            self.lxd.request(method, path, data, headers)
 
         r = self.lxd.getresponse()
         d = json.loads(r.read().decode("utf-8"))
@@ -101,7 +128,40 @@ class LXD(object):
         return [image.split("/1.0/images/")[-1] for image in data['metadata']]
 
     def images_upload(self, path, filename):
-        status, data = self.rest_call("/1.0/images", open(path, "rb"), "POST")
+        if isinstance(path, str):
+            status, data = self.rest_call("/1.0/images",
+                                          open(path, "rb"), "POST")
+        else:
+            meta_path, rootfs_path = path
+            boundary = str(uuid.uuid1())
+
+            form = []
+            for name, path in [("metadata", meta_path),
+                               ("rootfs", rootfs_path)]:
+                filename = os.path.basename(path)
+                form.append("--%s" % boundary)
+                form.append("Content-Disposition: form-data; "
+                            "name=%s; filename=%s" % (name, filename))
+                form.append("Content-Type: application/octet-stream")
+                form.append("")
+                with open(path, "rb") as fd:
+                    form.append(fd.read())
+
+            form.append("--%s--" % boundary)
+            form.append("")
+
+            body = b""
+            for entry in form:
+                if isinstance(entry, bytes):
+                    body += entry + b"\r\n"
+                else:
+                    body += entry.encode() + b"\r\n"
+
+            headers = {}
+            headers['Content-Type'] = "multipart/form-data; boundary=%s" \
+                % boundary
+
+            status, data = self.rest_call("/1.0/images", body, "POST", headers)
 
         if status != 200:
             raise Exception("Failed to upload the image: %s" % status)
@@ -120,11 +180,16 @@ class Busybox(object):
         if self.workdir:
             shutil.rmtree(self.workdir)
 
-    def create_tarball(self):
+    def create_tarball(self, split=False):
         xz = "pxz" if find_on_path("pxz") else "xz"
 
         destination_tar = os.path.join(self.workdir, "busybox.tar")
         target_tarball = tarfile.open(destination_tar, "w:")
+
+        if split:
+            destination_tar_rootfs = os.path.join(self.workdir,
+                                                  "busybox.rootfs.tar")
+            target_tarball_rootfs = tarfile.open(destination_tar_rootfs, "w:")
 
         metadata = {'architecture': os.uname()[4],
                     'creation_date': int(os.stat("/bin/busybox").st_ctime),
@@ -140,9 +205,13 @@ class Busybox(object):
         with open("/bin/busybox", "rb") as fd:
             busybox_file = tarfile.TarInfo()
             busybox_file.size = os.stat("/bin/busybox").st_size
-            busybox_file.name = "rootfs/bin/busybox"
             busybox_file.mode = 0o755
-            target_tarball.addfile(busybox_file, fd)
+            if split:
+                busybox_file.name = "bin/busybox"
+                target_tarball_rootfs.addfile(busybox_file, fd)
+            else:
+                busybox_file.name = "rootfs/bin/busybox"
+                target_tarball.addfile(busybox_file, fd)
 
         # Add symlinks
         busybox = subprocess.Popen(["/bin/busybox", "--list-full"],
@@ -155,17 +224,25 @@ class Busybox(object):
                 continue
 
             symlink_file = tarfile.TarInfo()
-            symlink_file.name = "rootfs/%s" % path.strip()
             symlink_file.type = tarfile.SYMTYPE
             symlink_file.linkname = "/bin/busybox"
-            target_tarball.addfile(symlink_file)
+            if split:
+                symlink_file.name = "%s" % path.strip()
+                target_tarball_rootfs.addfile(symlink_file)
+            else:
+                symlink_file.name = "rootfs/%s" % path.strip()
+                target_tarball.addfile(symlink_file)
 
         # Add directories
         for path in ("dev", "mnt", "proc", "root", "sys", "tmp"):
             directory_file = tarfile.TarInfo()
-            directory_file.name = "rootfs/%s" % path
             directory_file.type = tarfile.DIRTYPE
-            target_tarball.addfile(directory_file)
+            if split:
+                directory_file.name = "%s" % path
+                target_tarball_rootfs.addfile(directory_file)
+            else:
+                directory_file.name = "rootfs/%s" % path
+                target_tarball.addfile(directory_file)
 
         # Add the metadata file
         metadata_yaml = json.dumps(metadata, sort_keys=True,
@@ -179,13 +256,22 @@ class Busybox(object):
                                io.BytesIO(metadata_yaml))
 
         target_tarball.close()
+        if split:
+            target_tarball_rootfs.close()
 
         # Compress the tarball
         r = subprocess.call([xz, "-9", destination_tar])
         if r:
-            raise Exception("Failed to compress: %s" % path)
+            raise Exception("Failed to compress: %s" % destination_tar)
 
-        return destination_tar + ".xz"
+        if split:
+            r = subprocess.call([xz, "-9", destination_tar_rootfs])
+            if r:
+                raise Exception("Failed to compress: %s" %
+                                destination_tar_rootfs)
+            return destination_tar + ".xz", destination_tar_rootfs + ".xz"
+        else:
+            return destination_tar + ".xz"
 
 
 class LXCImages(object):
@@ -216,11 +302,11 @@ class LXCImages(object):
     def __grab_and_validate(self, url, dest):
         try:
             # Main file
-            urllib.request.urlretrieve(url, dest)
+            urllib.request.urlretrieve(url, dest, report_download)
 
             # Signature
             urllib.request.urlretrieve(url + ".asc",
-                                       dest + ".asc")
+                                       dest + ".asc", report_download)
         except socket.timeout or IOError as e:
             raise Exception("Failed to download \"%s\": %s" % (url, e))
 
@@ -313,6 +399,97 @@ class LXCImages(object):
         return path
 
 
+class Ubuntu(object):
+    workdir = None
+    server = None
+    stream = None
+
+    # FIXME: We should default to the released stream once available
+    def __init__(self, server="https://cloud-images.ubuntu.com",
+                 stream="daily"):
+
+        # Create our workdir
+        self.workdir = tempfile.mkdtemp()
+        self.gpgdir = "%s/gpg" % self.workdir
+        os.mkdir(self.gpgdir, 0o700)
+
+        # Set variables
+        self.server = server
+        self.stream = stream
+
+    def __del__(self):
+        if self.workdir:
+            shutil.rmtree(self.workdir)
+
+    def image_download(self, release=None, architecture=None, version=None):
+        if not release:
+            # FIXME: We should default to latest LTS once available
+            release = "wily"
+
+        if not architecture:
+            architecture = local_architecture()
+
+        try:
+            print(_("Downloading the image index: %s" % self.server))
+            index = json.loads(
+                urllib.request.urlopen(
+                    "%s/%s/streams/v1/com.ubuntu.cloud:%s:download.json" %
+                    (self.server, self.stream, self.stream)).read().decode())
+        except:
+            raise Exception("Unable to parse the image index.")
+
+        image = None
+        for product_name, product in index['products'].items():
+            if product['release'] != release and \
+                    product['version'] != release:
+                continue
+
+            if product['arch'] != architecture:
+                continue
+
+            candidates = {}
+            for version_number, version_entry in product['versions'].items():
+                if "lxd.tar.xz" not in version_entry['items']:
+                    continue
+
+                if "root.tar.xz" not in version_entry['items']:
+                    continue
+
+                candidates[version_number] = version_entry
+
+            if not candidates:
+                raise Exception("The requested image doesn't exist.")
+
+            if version:
+                if version not in candidates:
+                    raise Exception("The requested image doesn't exist.")
+
+                image = candidates[version]
+                break
+            else:
+                image = list(candidates.values())[-1]
+
+        if not image:
+            raise Exception("The requested image doesn't exist.")
+
+        print(_("Downloading the image."))
+        meta_path = os.path.join(self.workdir,
+                                 "meta-%s.tar.xz" % image['pubname'])
+        urllib.request.urlretrieve(
+            "%s/%s" % (self.server, image['items']['lxd.tar.xz']['path']),
+            meta_path,
+            report_download)
+
+        rootfs_path = os.path.join(self.workdir,
+                                   "%s.tar.xz" % image['pubname'])
+        urllib.request.urlretrieve(
+            "%s/%s" % (self.server, image['items']['root.tar.xz']['path']),
+            rootfs_path,
+            report_download)
+
+        return meta_path, rootfs_path
+
+
 if __name__ == "__main__":
     if "LXD_DIR" in os.environ:
         lxd_socket = os.path.join(os.environ['LXD_DIR'], "unix.socket")
@@ -335,16 +512,32 @@ if __name__ == "__main__":
 
     def import_busybox(parser, args):
         busybox = Busybox()
-        path = busybox.create_tarball()
 
-        with open(path, "rb") as fd:
-            fingerprint = hashlib.sha256(fd.read()).hexdigest()
+        if args.split:
+            meta_path, rootfs_path = busybox.create_tarball(split=True)
 
-        if fingerprint in lxd.images_list():
-            parser.exit(1, _("This image is already in the store.\n"))
+            with open(meta_path, "rb") as meta_fd:
+                with open(rootfs_path, "rb") as rootfs_fd:
+                    fingerprint = hashlib.sha256(meta_fd.read() +
+                                                 rootfs_fd.read()).hexdigest()
 
-        r = lxd.images_upload(path, path.split("/")[-1])
-        print(_("Image imported as: %s" % r['fingerprint']))
+            if fingerprint in lxd.images_list():
+                parser.exit(1, _("This image is already in the store.\n"))
+
+            r = lxd.images_upload((meta_path, rootfs_path),
+                                  meta_path.split("/")[-1])
+            print(_("Image imported as: %s" % r['fingerprint']))
+        else:
+            path = busybox.create_tarball()
+
+            with open(path, "rb") as fd:
+                fingerprint = hashlib.sha256(fd.read()).hexdigest()
+
+            if fingerprint in lxd.images_list():
+                parser.exit(1, _("This image is already in the store.\n"))
+
+            r = lxd.images_upload(path, path.split("/")[-1])
+            print(_("Image imported as: %s" % r['fingerprint']))
 
         setup_alias(parser, args, fingerprint)
 
@@ -369,16 +562,40 @@ if __name__ == "__main__":
 
         setup_alias(parser, args, fingerprint)
 
+    def import_ubuntu(parser, args):
+        ubuntu = Ubuntu()
+
+        meta_path, rootfs_path = ubuntu.image_download(args.release,
+                                                       args.architecture,
+                                                       args.version)
+
+        with open(meta_path, "rb") as meta_fd:
+            with open(rootfs_path, "rb") as rootfs_fd:
+                fingerprint = hashlib.sha256(meta_fd.read() +
+                                             rootfs_fd.read()).hexdigest()
+
+        if fingerprint in lxd.images_list():
+            parser.exit(1, _("This image is already in the store.\n"))
+
+        r = lxd.images_upload((meta_path, rootfs_path),
+                              meta_path.split("/")[-1])
+        print(_("Image imported as: %s" % r['fingerprint']))
+
+        setup_alias(parser, args, fingerprint)
+
     parser = FriendlyParser(
         description=_("LXD: image store helper"),
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=_("""Examples:
+ To import the latest Ubuntu Cloud image with an alias:
+    %s import ubuntu --alias ubuntu
+
  To import the latest Ubuntu 14.04 LTS 64bit image with some aliases:
     %s import lxc ubuntu trusty amd64 --alias ubuntu --alias ubuntu/trusty
 
  To import a basic busybox image:
     %s import busybox --alias busybox
-""" % (sys.argv[0], sys.argv[0])))
+""" % (sys.argv[0], sys.argv[0], sys.argv[0])))
 
     parser_subparsers = parser.add_subparsers(dest="action")
     parser_subparsers.required = True
@@ -389,14 +606,17 @@ if __name__ == "__main__":
     parser_import_subparsers = parser_import.add_subparsers(dest="source")
     parser_import_subparsers.required = True
 
-    ## Busybox
+    # # Busybox
     parser_import_busybox = parser_import_subparsers.add_parser(
         "busybox", help=_("Busybox image"))
     parser_import_busybox.add_argument("--alias", action="append", default=[],
                                        help=_("Aliases for the image"))
+    parser_import_busybox.add_argument(
+        "--split", action="store_true", default=False,
+        help=_("Whether to create a split image"))
     parser_import_busybox.set_defaults(func=import_busybox)
 
-    ## LXC
+    # # LXC
     parser_import_lxc = parser_import_subparsers.add_parser(
         "lxc", help=_("LXC images"))
     parser_import_lxc.add_argument("distribution", help=_("Distribution"))
@@ -408,6 +628,22 @@ if __name__ == "__main__":
                                    help=_("Aliases for the image"))
     parser_import_lxc.set_defaults(func=import_lxc)
 
+    # # Ubuntu
+    parser_import_ubuntu = parser_import_subparsers.add_parser(
+        "ubuntu", help=_("Ubuntu images"))
+    parser_import_ubuntu.add_argument("release", help=_("Release"),
+                                      default=None, nargs="?")
+    parser_import_ubuntu.add_argument("architecture", help=_("Architecture"),
+                                      default=None, nargs="?")
+    parser_import_ubuntu.add_argument("version", help=_("Version"),
+                                      default=None, nargs="?")
+    parser_import_ubuntu.add_argument("--alias", action="append", default=[],
+                                      help=_("Aliases for the image"))
+    parser_import_ubuntu.set_defaults(func=import_ubuntu)
+
     # Call the function
     args = parser.parse_args()
-    args.func(parser, args)
+    try:
+        args.func(parser, args)
+    except Exception as e:
+        parser.error(e)

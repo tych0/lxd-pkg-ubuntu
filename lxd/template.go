@@ -73,25 +73,30 @@ func templateApply(c *lxdContainer, trigger string) error {
 			w.Chmod(0644)
 		}
 
-		tpl, err := pongo2.FromFile(shared.VarPath("lxc", c.name, "templates", template.Template))
+		tplString, err := ioutil.ReadFile(shared.VarPath("lxc", c.name, "templates", template.Template))
 		if err != nil {
 			return err
 		}
 
-		container_meta := make(map[string]string)
-		container_meta["name"] = c.name
-		container_meta["architecture"], _ = shared.ArchitectureName(c.architecture)
+		tpl, err := pongo2.FromString("{% autoescape off %}" + string(tplString) + "{% endautoescape %}")
+		if err != nil {
+			return err
+		}
+
+		containerMeta := make(map[string]string)
+		containerMeta["name"] = c.name
+		containerMeta["architecture"], _ = shared.ArchitectureName(c.architecture)
 
 		if c.ephemeral {
-			container_meta["ephemeral"] = "true"
+			containerMeta["ephemeral"] = "true"
 		} else {
-			container_meta["ephemeral"] = "false"
+			containerMeta["ephemeral"] = "false"
 		}
 
 		if c.isPrivileged() {
-			container_meta["privileged"] = "true"
+			containerMeta["privileged"] = "true"
 		} else {
-			container_meta["privileged"] = "false"
+			containerMeta["privileged"] = "false"
 		}
 
 		configGet := func(confKey, confDefault *pongo2.Value) *pongo2.Value {
@@ -105,7 +110,7 @@ func templateApply(c *lxdContainer, trigger string) error {
 
 		tpl.ExecuteWriter(pongo2.Context{"trigger": trigger,
 			"path":       filepath,
-			"container":  container_meta,
+			"container":  containerMeta,
 			"config":     c.config,
 			"devices":    c.devices,
 			"properties": template.Properties,

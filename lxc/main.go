@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"os"
@@ -56,8 +55,13 @@ func run() error {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 	}
 
-	if len(os.Args) == 2 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
+	if len(os.Args) >= 2 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
 		os.Args[1] = "help"
+	}
+
+	if len(os.Args) >= 2 && (os.Args[1] == "--all") {
+		os.Args[1] = "help"
+		os.Args = append(os.Args, "--all")
 	}
 
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
@@ -84,10 +88,7 @@ func run() error {
 	os.Args = os.Args[1:]
 	gnuflag.Parse(true)
 
-	if *verbose || *debug {
-		shared.SetLogger(log.New(os.Stderr, "", log.LstdFlags))
-		shared.SetDebug(*debug)
-	}
+	shared.SetLogger("", "", *verbose, *debug)
 
 	config, err := lxd.LoadConfig()
 	if err != nil {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/chai2010/gettext-go/gettext"
+	"github.com/olekukonko/tablewriter"
 	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 
@@ -47,28 +50,28 @@ func (c *configCmd) usage() string {
 	return gettext.Gettext(
 		"Manage configuration.\n" +
 			"\n" +
-			"lxc config device add <container> <name> <type> [key=value]...\n" +
+			"lxc config device add <[remote:]container> <name> <type> [key=value]...\n" +
 			"               Add a device to a container\n" +
-			"lxc config device list <container>                     List devices for container\n" +
-			"lxc config device show <container>                     Show full device details for container\n" +
-			"lxc config device remove <container> <name>            Remove device from container\n" +
-			"lxc config edit <container>                            Edit container configuration in external editor\n" +
-			"lxc config get <container> key                         Get configuration key\n" +
-			"lxc config set <container> key value                   Set container configuration key\n" +
-			"lxc config unset <container> key                       Unset container configuration key\n" +
+			"lxc config device list [remote:]<container>            List devices for container\n" +
+			"lxc config device show [remote:]<container>            Show full device details for container\n" +
+			"lxc config device remove [remote:]<container> <name>   Remove device from container\n" +
+			"lxc config edit [remote:]<container>                   Edit container configuration in external editor\n" +
+			"lxc config get [remote:]<container> key                Get configuration key\n" +
+			"lxc config set [remote:]<container> key value          Set container configuration key\n" +
+			"lxc config unset [remote:]<container> key              Unset container configuration key\n" +
 			"lxc config set key value                               Set server configuration key\n" +
 			"lxc config unset key                                   Unset server configuration key\n" +
-			"lxc config show <container>                            Show container configuration\n" +
+			"lxc config show [remote:]<container>                   Show container configuration\n" +
 			"lxc config trust list [remote]                         List all trusted certs.\n" +
-			"lxc config trust add [remote] [certfile.crt]           Add certfile.crt to trusted hosts.\n" +
+			"lxc config trust add [remote] <certfile.crt>           Add certfile.crt to trusted hosts.\n" +
 			"lxc config trust remove [remote] [hostname|fingerprint]\n" +
 			"               Remove the cert from trusted hosts.\n" +
 			"\n" +
 			"Examples:\n" +
 			"To mount host's /share/c1 onto /opt in the container:\n" +
-			"\tlxc config device add container1 mntdir disk source=/share/c1 path=opt\n" +
+			"\tlxc config device add [remote:]container1 mntdir disk source=/share/c1 path=opt\n" +
 			"To set an lxc config value:\n" +
-			"\tlxc config set <container> raw.lxc 'lxc.aa_allow_incomplete = 1'\n" +
+			"\tlxc config set [remote:]<container> raw.lxc 'lxc.aa_allow_incomplete = 1'\n" +
 			"To set the server trust password:\n" +
 			"\tlxc config set core.trust_password blah\n")
 }
@@ -166,9 +169,29 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 				return err
 			}
 
-			for _, fingerprint := range trust {
-				fmt.Println(fmt.Sprintf("%s", fingerprint))
+			data := [][]string{}
+			for _, cert := range trust {
+				fp := cert.Fingerprint[0:12]
+
+				certBlock, _ := pem.Decode([]byte(cert.Certificate))
+				cert, err := x509.ParseCertificate(certBlock.Bytes)
+				if err != nil {
+					return err
+				}
+
+				const layout = "Jan 2, 2006 at 3:04pm (MST)"
+				issue := cert.NotBefore.Format(layout)
+				expiry := cert.NotAfter.Format(layout)
+				data = append(data, []string{fp, cert.Subject.CommonName, issue, expiry})
 			}
+
+			table := tablewriter.NewWriter(os.Stdout)
+			table.SetHeader([]string{"FINGERPRINT", "COMMON NAME", "ISSUE DATE", "EXPIRY DATE"})
+
+			for _, v := range data {
+				table.Append(v)
+			}
+			table.Render()
 
 			return nil
 		case "add":

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -229,6 +231,7 @@ func NewClient(config *Config, remote string) (*Client, error) {
 			}
 
 			c.websocketDialer = websocket.Dialer{
+				NetDial:         shared.RFC3493Dialer,
 				TLSClientConfig: tlsconfig,
 			}
 
@@ -493,43 +496,48 @@ func (c *Client) ListContainers() ([]shared.ContainerInfo, error) {
 }
 
 func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliases []string, public bool) error {
-	uri := c.url(shared.APIVersion, "images", image, "export")
-	raw, err := c.getRaw(uri)
-
-	if err != nil {
-		return err
-	}
-	info, err := c.GetImageInfo(image)
-	if err != nil {
-		return err
+	fingerprint := c.GetAlias(image)
+	if fingerprint == "" {
+		fingerprint = image
 	}
 
-	cd := strings.Split(raw.Header["Content-Disposition"][0], "=")
-
-	posturi := dest.url(shared.APIVersion, "images")
-	postreq, err := http.NewRequest("POST", posturi, raw.Body)
-	if err != nil {
-		return err
-	}
-	postreq.Header.Set("User-Agent", shared.UserAgent)
-	postreq.Header.Set("X-LXD-filename", cd[1])
-	if public {
-		postreq.Header.Set("X-LXD-public", "1")
-	} else {
-		postreq.Header.Set("X-LXD-public", "0")
-	}
-	imgProps := url.Values{}
-	for key, value := range info.Properties {
-		imgProps.Set(key, value)
-	}
-	postreq.Header.Set("X-LXD-properties", imgProps.Encode())
-
-	postresp, err := dest.http.Do(postreq)
+	info, err := c.GetImageInfo(fingerprint)
 	if err != nil {
 		return err
 	}
 
-	_, err = HoistResponse(postresp, Sync)
+	source := shared.Jmap{
+		"type":        "image",
+		"mode":        "pull",
+		"server":      c.BaseURL,
+		"fingerprint": fingerprint}
+
+	if info.Public == 0 {
+		var operation string
+
+		resp, err := c.post("images/"+fingerprint+"/secret", nil, Async)
+		if err != nil {
+			return err
+		}
+
+		toScan := strings.Replace(resp.Operation, "/", " ", -1)
+		version := ""
+		count, err := fmt.Sscanf(toScan, " %s operations %s", &version, &operation)
+		if err != nil || count != 2 {
+			return err
+		}
+
+		md := secretMd{}
+		if err := json.Unmarshal(resp.Metadata, &md); err != nil {
+			return err
+		}
+
+		source["secret"] = md.Secret
+	}
+
+	body := shared.Jmap{"public": public, "source": source}
+
+	_, err = dest.post("images", body, Sync)
 	if err != nil {
 		return err
 	}
@@ -563,8 +571,70 @@ func (c *Client) ExportImage(image string, target string) (*Response, string, er
 	if err != nil {
 		return nil, "", err
 	}
-	var wr io.Writer
 
+	ctype, ctypeParams, err := mime.ParseMediaType(raw.Header.Get("Content-Type"))
+	if err != nil {
+		ctype = "application/octet-stream"
+	}
+
+	// Deal with split images
+	if ctype == "multipart/form-data" {
+		if !shared.IsDir(target) {
+			return nil, "", fmt.Errorf(gettext.Gettext("Split images can only be written to a directory."))
+		}
+
+		// Parse the POST data
+		mr := multipart.NewReader(raw.Body, ctypeParams["boundary"])
+
+		// Get the metadata tarball
+		part, err := mr.NextPart()
+		if err != nil {
+			return nil, "", err
+		}
+
+		if part.FormName() != "metadata" {
+			return nil, "", fmt.Errorf("Invalid multipart image")
+		}
+
+		imageTarf, err := os.OpenFile(part.FileName(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return nil, "", err
+		}
+
+		_, err = io.Copy(imageTarf, part)
+
+		imageTarf.Close()
+		if err != nil {
+			return nil, "", err
+		}
+
+		// Get the rootfs tarball
+		part, err = mr.NextPart()
+		if err != nil {
+			return nil, "", err
+		}
+
+		if part.FormName() != "rootfs" {
+			return nil, "", fmt.Errorf("Invalid multipart image")
+		}
+
+		rootfsTarf, err := os.OpenFile(part.FileName(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return nil, "", err
+		}
+
+		_, err = io.Copy(rootfsTarf, part)
+
+		rootfsTarf.Close()
+		if err != nil {
+			return nil, "", err
+		}
+
+		return nil, target, nil
+	}
+
+	// Deal with unified images
+	var wr io.Writer
 	var destpath string
 	if target == "-" {
 		wr = os.Stdout
@@ -623,25 +693,69 @@ func (c *Client) ExportImage(image string, target string) (*Response, string, er
 
 	// it streams to stdout or file, so no response returned
 	return nil, destpath, nil
-
 }
 
-func (c *Client) PostImage(path string, properties []string, public bool, aliases []string) (string, error) {
+func (c *Client) PostImage(imageFile string, rootfsFile string, properties []string, public bool, aliases []string) (string, error) {
 	uri := c.url(shared.APIVersion, "images")
 
-	f, err := os.Open(path)
+	var err error
+	var fImage *os.File
+	var fRootfs *os.File
+	var req *http.Request
+
+	fImage, err = os.Open(imageFile)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer fImage.Close()
 
-	req, err := http.NewRequest("POST", uri, f)
+	if rootfsFile != "" {
+		fRootfs, err = os.Open(rootfsFile)
+		if err != nil {
+			return "", err
+		}
+		defer fRootfs.Close()
+
+		body := &bytes.Buffer{}
+		w := multipart.NewWriter(body)
+
+		// Metadata file
+		fw, err := w.CreateFormFile("metadata", path.Base(imageFile))
+		if err != nil {
+			return "", err
+		}
+
+		_, err = io.Copy(fw, fImage)
+		if err != nil {
+			return "", err
+		}
+
+		// Rootfs file
+		fw, err = w.CreateFormFile("rootfs", path.Base(rootfsFile))
+		if err != nil {
+			return "", err
+		}
+
+		_, err = io.Copy(fw, fRootfs)
+		if err != nil {
+			return "", err
+		}
+
+		w.Close()
+
+		req, err = http.NewRequest("POST", uri, body)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+	} else {
+		req, err = http.NewRequest("POST", uri, fImage)
+		req.Header.Set("X-LXD-filename", filepath.Base(imageFile))
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", shared.UserAgent)
 
-	req.Header.Set("X-LXD-filename", filepath.Base(path))
 	if public {
 		req.Header.Set("X-LXD-public", "1")
 	} else {
@@ -649,7 +763,6 @@ func (c *Client) PostImage(path string, properties []string, public bool, aliase
 	}
 
 	if len(properties) != 0 {
-
 		imgProps := url.Values{}
 		for _, value := range properties {
 			eqIndex := strings.Index(value, "=")
@@ -810,18 +923,18 @@ func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	return err
 }
 
-func (c *Client) CertificateList() ([]string, error) {
-	raw, err := c.get("certificates")
+func (c *Client) CertificateList() ([]shared.CertInfo, error) {
+	resp, err := c.get("certificates?recursion=1")
 	if err != nil {
 		return nil, err
 	}
 
-	ret := []string{}
-	if err := json.Unmarshal(raw.Metadata, &ret); err != nil {
+	var result []shared.CertInfo
+	if err := json.Unmarshal(resp.Metadata, &result); err != nil {
 		return nil, err
 	}
 
-	return ret, nil
+	return result, nil
 }
 
 func (c *Client) AddMyCertToServer(pwd string) error {
@@ -878,6 +991,12 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 	var tmpremote *Client
 	var err error
 
+	serverStatus, err := c.ServerStatus()
+	if err != nil {
+		return nil, err
+	}
+	architectures := serverStatus.Environment.Architectures
+
 	source := shared.Jmap{"type": "image"}
 
 	if imgremote != "" {
@@ -896,6 +1015,10 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 		imageinfo, err := tmpremote.GetImageInfo(fingerprint)
 		if err != nil {
 			return nil, err
+		}
+
+		if !shared.IntInSlice(imageinfo.Architecture, architectures) {
+			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
 		}
 
 		if imageinfo.Public == 0 {
@@ -922,16 +1045,20 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 		source["server"] = tmpremote.BaseURL
 		source["fingerprint"] = fingerprint
 	} else {
-		isAlias, err := c.IsAlias(image)
+		fingerprint := c.GetAlias(image)
+		if fingerprint == "" {
+			fingerprint = image
+		}
+
+		imageinfo, err := c.GetImageInfo(fingerprint)
 		if err != nil {
 			return nil, err
 		}
 
-		if isAlias {
-			source["alias"] = image
-		} else {
-			source["fingerprint"] = image
+		if !shared.IntInSlice(imageinfo.Architecture, architectures) {
+			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
 		}
+		source["fingerprint"] = fingerprint
 	}
 
 	body := shared.Jmap{"source": source}
@@ -1214,10 +1341,7 @@ func (c *Client) PullFile(container string, p string) (int, int, os.FileMode, io
 		return 0, 0, 0, nil, err
 	}
 
-	uid, gid, mode, err := shared.ParseLXDFileHeaders(r.Header)
-	if err != nil {
-		return 0, 0, 0, nil, err
-	}
+	uid, gid, mode := shared.ParseLXDFileHeaders(r.Header)
 
 	return uid, gid, mode, r.Body, nil
 }
