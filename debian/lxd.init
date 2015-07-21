@@ -30,7 +30,7 @@ case "$1" in
 
         echo -n "Starting $DESC: "
         ulimit -n 65536
-        if start-stop-daemon ${START} -- --group lxd --tcp [::]:8443 >/dev/null 2>&1 ; then
+        if start-stop-daemon ${START} -- --group lxd --tcp [::]:8443 --logfile=/var/log/lxd/lxd.log >/dev/null 2>&1 ; then
             echo "${NAME}."
         else
             if start-stop-daemon --test ${START} >/dev/null 2>&1; then

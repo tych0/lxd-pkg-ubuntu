@@ -1,3 +1,10 @@
+lxd (0.14-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.14)
+  * Log daemon output to /var/log/lxd/lxd.log
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 21 Jul 2015 19:04:19 -0400
+
 lxd (0.13-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.13)
