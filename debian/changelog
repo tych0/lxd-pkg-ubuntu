@@ -1,3 +1,10 @@
+lxd (0.14-0ubuntu2) wily; urgency=medium
+
+  * Cherry-pick bugfix for invalid / permission when using split-images.
+    5f45bfb2032716259be2412e0ac0902d70b944f0
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sun, 26 Jul 2015 15:23:06 +0200
+
 lxd (0.14-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.14)
