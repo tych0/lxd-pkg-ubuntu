@@ -1,3 +1,9 @@
+lxd (0.14-0ubuntu3) wily; urgency=medium
+
+  * Have the package create /var/log/lxd.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 29 Jul 2015 16:41:45 +0200
+
 lxd (0.14-0ubuntu2) wily; urgency=medium
 
   * Cherry-pick bugfix for invalid / permission when using split-images.
