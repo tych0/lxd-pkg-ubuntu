@@ -1,15 +1,16 @@
 test_migration() {
+  ensure_import_testimage
   (echo y;  sleep 3;  echo foo) | lxc remote add l1 127.0.0.1:18443 $debug
   (echo y;  sleep 3;  echo foo) | lxc remote add l2 127.0.0.1:18444 $debug
 
   lxc init testimage nonlive
   lxc move l1:nonlive l2:
-  [ -d "$LXD2_DIR/lxc/nonlive/rootfs" ]
-  [ ! -d "$LXD_DIR/lxc/nonlive" ]
+  [ -d "$LXD2_DIR/containers/nonlive/rootfs" ]
+  [ ! -d "$LXD_DIR/containers/nonlive" ]
 
   lxc copy l2:nonlive l1:nonlive2
-  [ -d "$LXD_DIR/lxc/nonlive2" ]
-  [ -d "$LXD2_DIR/lxc/nonlive/rootfs" ]
+  [ -d "$LXD_DIR/containers/nonlive2" ]
+  [ -d "$LXD2_DIR/containers/nonlive/rootfs" ]
 
   lxc copy l2:nonlive l2:nonlive2
 

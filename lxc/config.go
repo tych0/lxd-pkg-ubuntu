@@ -69,7 +69,7 @@ func (c *configCmd) usage() string {
 			"\n" +
 			"Examples:\n" +
 			"To mount host's /share/c1 onto /opt in the container:\n" +
-			"\tlxc config device add [remote:]container1 mntdir disk source=/share/c1 path=opt\n" +
+			"\tlxc config device add [remote:]container1 <device-name> disk source=/share/c1 path=opt\n" +
 			"To set an lxc config value:\n" +
 			"\tlxc config set [remote:]<container> raw.lxc 'lxc.aa_allow_incomplete = 1'\n" +
 			"To set the server trust password:\n" +
@@ -92,11 +92,7 @@ func doSet(config *lxd.Config, args []string) error {
 
 	key := args[2]
 	value := args[3]
-	resp, err := d.SetContainerConfig(container, key, value)
-	if err != nil {
-		return err
-	}
-	return d.WaitForSuccess(resp.Operation)
+	return d.SetContainerConfig(container, key, value)
 }
 
 func (c *configCmd) run(config *lxd.Config, args []string) error {
@@ -242,9 +238,6 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		container := ""
 		if len(args) > 1 {
 			remote, container = config.ParseRemoteAndContainer(args[1])
-			if container == "" {
-				return fmt.Errorf(gettext.Gettext("Show for remotes is not yet supported\n"))
-			}
 		}
 
 		d, err := lxd.NewClient(config, remote)
@@ -378,7 +371,8 @@ func doConfigEdit(client *lxd.Client, cont string) error {
 	defer os.Remove(fname)
 
 	for {
-		cmd := exec.Command(editor, fname)
+		cmdParts := strings.Fields(editor)
+		cmd := exec.Command(cmdParts[0], append(cmdParts[1:], fname)...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

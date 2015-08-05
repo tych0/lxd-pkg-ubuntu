@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,9 @@ import (
 	"syscall"
 	"unsafe"
 )
+
+const SnapshotDelimiter = "/"
+const DefaultPort = "8443"
 
 func GetFileStat(p string) (uid int, gid int, major int, minor int,
 	inode uint64, nlink int, err error) {
@@ -41,6 +45,17 @@ func GetFileStat(p string) (uid int, gid int, major int, minor int,
 	return
 }
 
+// AddSlash adds a slash to the end of paths if they don't already have one.
+// This can be useful for rsyncing things, since rsync has behavior present on
+// the presence or absence of a trailing slash.
+func AddSlash(path string) string {
+	if path[len(path)-1] != '/' {
+		return path + "/"
+	}
+
+	return path
+}
+
 func PathExists(name string) bool {
 	_, err := os.Lstat(name)
 	if err != nil && os.IsNotExist(err) {
@@ -49,6 +64,25 @@ func PathExists(name string) bool {
 	return true
 }
 
+// PathIsEmpty checks if the given path is empty.
+func PathIsEmpty(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	// read in ONLY one file
+	_, err = f.Readdir(1)
+
+	// and if the file is EOF... well, the dir is empty.
+	if err == io.EOF {
+		return true, nil
+	}
+	return false, err
+}
+
+// IsDir returns true if the given path is a directory.
 func IsDir(name string) bool {
 	stat, err := os.Lstat(name)
 	if err != nil {
@@ -230,8 +264,24 @@ func WriteAllBuf(w io.Writer, buf *bytes.Buffer) error {
 	}
 }
 
-// CopyFile copies a file, overwriting the target if it exists.
-func CopyFile(dest string, source string) error {
+// FileMove tries to move a file by using os.Rename,
+// if that fails it tries to copy the file and remove the source.
+func FileMove(oldPath string, newPath string) error {
+	if err := os.Rename(oldPath, newPath); err == nil {
+		return nil
+	}
+
+	if err := FileCopy(oldPath, newPath); err != nil {
+		return err
+	}
+
+	os.Remove(oldPath)
+
+	return nil
+}
+
+// FileCopy copies a file, overwriting the target if it exists.
+func FileCopy(source string, dest string) error {
 	s, err := os.Open(source)
 	if err != nil {
 		return err
@@ -255,38 +305,6 @@ func CopyFile(dest string, source string) error {
 	return err
 }
 
-/* Some interesting filesystems */
-const (
-	tmpfsSuperMagic = 0x01021994
-	ext4SuperMagic  = 0xEF53
-	xfsSuperMagic   = 0x58465342
-	nfsSuperMagic   = 0x6969
-)
-
-func GetFilesystem(path string) (string, error) {
-	fs := syscall.Statfs_t{}
-
-	err := syscall.Statfs(path, &fs)
-	if err != nil {
-		return "", err
-	}
-
-	switch fs.Type {
-	case btrfsSuperMagic:
-		return "btrfs", nil
-	case tmpfsSuperMagic:
-		return "tmpfs", nil
-	case ext4SuperMagic:
-		return "ext4", nil
-	case xfsSuperMagic:
-		return "xfs", nil
-	case nfsSuperMagic:
-		return "nfs", nil
-	default:
-		return string(fs.Type), nil
-	}
-}
-
 type BytesReadCloser struct {
 	Buf *bytes.Buffer
 }
@@ -301,7 +319,7 @@ func (r BytesReadCloser) Close() error {
 }
 
 func IsSnapshot(name string) bool {
-	return strings.Contains(name, "/")
+	return strings.Contains(name, SnapshotDelimiter)
 }
 
 func ReadLastNLines(f *os.File, lines int) (string, error) {
@@ -416,4 +434,86 @@ func IntInSlice(key int, list []int) bool {
 		}
 	}
 	return false
+}
+
+/*
+ * returns 1 if path is mounted shared:
+ * returns 0 if path is not listed
+ * returns -1 if path is explicitly mounted as not-shared
+ */
+func isSharedMount(file *os.File, pathName string) int {
+	_, err := file.Seek(0, 0)
+	if err != nil {
+		Debugf("Error rewinding mountinfo file: %s\n", err)
+		return 0
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		rows := strings.Fields(line)
+		if rows[3] != pathName || rows[4] != pathName {
+			continue
+		}
+		if strings.HasPrefix(rows[6], "shared:") {
+			return 1
+		} else {
+			return -1
+		}
+	}
+	return 0
+}
+
+func IsSharedMount(pathName string) bool {
+	file, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	switch isSharedMount(file, pathName) {
+	case 1:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsOnSharedMount(pathName string) bool {
+	file, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	for {
+		switch isSharedMount(file, pathName) {
+		case 1:
+			return true
+		case -1:
+			return false
+		}
+		if pathName == "/" || pathName == "." {
+			return false
+		}
+		pathName = filepath.Dir(pathName)
+	}
+}
+
+func IsBlockdev(fm os.FileMode) bool {
+	return ((fm&os.ModeDevice != 0) && (fm&os.ModeCharDevice == 0))
+}
+
+func IsBlockdevPath(pathName string) bool {
+	sb, err := os.Stat(pathName)
+	if err != nil {
+		return false
+	}
+
+	fm := sb.Mode()
+	return ((fm&os.ModeDevice != 0) && (fm&os.ModeCharDevice == 0))
+}
+
+func BlockFsDetect(dev string) (string, error) {
+	out, err := exec.Command("blkid", "-s", "TYPE", "-o", "value", dev).Output()
+	return strings.TrimSpace(string(out)), err
 }

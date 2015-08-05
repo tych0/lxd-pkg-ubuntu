@@ -2,6 +2,7 @@ package shared
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 
 	log "gopkg.in/inconshreveable/log15.v2"
@@ -12,7 +13,7 @@ var Log log.Logger
 var debug bool
 
 // SetLogger defines the *log.Logger where log messages are sent to.
-func SetLogger(syslog string, logfile string, verbose bool, debug bool) {
+func SetLogger(syslog string, logfile string, verbose bool, debug bool) error {
 	Log = log.New()
 
 	var handlers []log.Handler
@@ -23,7 +24,7 @@ func SetLogger(syslog string, logfile string, verbose bool, debug bool) {
 			handlers = append(
 				handlers,
 				log.LvlFilterHandler(
-					log.LvlError,
+					log.LvlInfo,
 					log.Must.SyslogHandler(syslog, log.LogfmtFormat()),
 				),
 			)
@@ -34,11 +35,15 @@ func SetLogger(syslog string, logfile string, verbose bool, debug bool) {
 
 	// FileHandler
 	if logfile != "" {
+		if !PathExists(filepath.Dir(logfile)) {
+			return fmt.Errorf("Log file path doesn't exist: %s\n", filepath.Dir(logfile))
+		}
+
 		if !debug {
 			handlers = append(
 				handlers,
 				log.LvlFilterHandler(
-					log.LvlError,
+					log.LvlInfo,
 					log.Must.FileHandler(logfile, log.LogfmtFormat()),
 				),
 			)
@@ -53,7 +58,7 @@ func SetLogger(syslog string, logfile string, verbose bool, debug bool) {
 			handlers = append(
 				handlers,
 				log.LvlFilterHandler(
-					log.LvlError,
+					log.LvlInfo,
 					log.StderrHandler,
 				),
 			)
@@ -63,6 +68,8 @@ func SetLogger(syslog string, logfile string, verbose bool, debug bool) {
 	}
 
 	Log.SetHandler(log.MultiHandler(handlers...))
+
+	return nil
 }
 
 // Logf sends to the logger registered via SetLogger the string resulting

@@ -1017,7 +1017,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 			return nil, err
 		}
 
-		if !shared.IntInSlice(imageinfo.Architecture, architectures) {
+		if len(architectures) != 0 && !shared.IntInSlice(imageinfo.Architecture, architectures) {
 			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
 		}
 
@@ -1052,10 +1052,10 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 
 		imageinfo, err := c.GetImageInfo(fingerprint)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf(gettext.Gettext("can't get info for image '%s': %s"), image, err)
 		}
 
-		if !shared.IntInSlice(imageinfo.Architecture, architectures) {
+		if len(architectures) != 0 && !shared.IntInSlice(imageinfo.Architecture, architectures) {
 			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
 		}
 		source["fingerprint"] = fingerprint
@@ -1346,7 +1346,7 @@ func (c *Client) PullFile(container string, p string) (int, int, os.FileMode, io
 	return uid, gid, mode, r.Body, nil
 }
 
-func (c *Client) MigrateTo(container string) (*Response, error) {
+func (c *Client) GetMigrationSourceWS(container string) (*Response, error) {
 	body := shared.Jmap{"migration": true}
 	return c.post(fmt.Sprintf("containers/%s", container), body, Async)
 }
@@ -1492,10 +1492,10 @@ func (c *Client) GetContainerConfig(container string) ([]string, error) {
 	return resp, nil
 }
 
-func (c *Client) SetContainerConfig(container, key, value string) (*Response, error) {
+func (c *Client) SetContainerConfig(container, key, value string) error {
 	st, err := c.ContainerStatus(container, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if value == "" {
@@ -1505,7 +1505,17 @@ func (c *Client) SetContainerConfig(container, key, value string) (*Response, er
 	}
 
 	body := shared.Jmap{"config": st.Config, "profiles": st.Profiles, "name": container, "devices": st.Devices}
-	return c.put(fmt.Sprintf("containers/%s", container), body, Async)
+	/*
+	 * Although container config is an async operation (we PUT to restore a
+	 * snapshot), we expect config to be a sync operation, so let's just
+	 * handle it here.
+	 */
+	resp, err := c.put(fmt.Sprintf("containers/%s", container), body, Async)
+	if err != nil {
+		return err
+	}
+
+	return c.WaitForSuccess(resp.Operation)
 }
 
 func (c *Client) UpdateContainerConfig(container string, st shared.BriefContainerState) error {
@@ -1642,6 +1652,9 @@ func (c *Client) ContainerDeviceAdd(container, devname, devtype string, props []
 		v := results[1]
 		newdev[k] = v
 	}
+	if st.Devices != nil && st.Devices.ContainsName(devname) {
+		return nil, fmt.Errorf(gettext.Gettext("device already exists\n"))
+	}
 	newdev["type"] = devtype
 	if st.Devices == nil {
 		st.Devices = shared.Devices{}
@@ -1695,6 +1708,9 @@ func (c *Client) ProfileDeviceAdd(profile, devname, devtype string, props []stri
 		k := results[0]
 		v := results[1]
 		newdev[k] = v
+	}
+	if st.Devices != nil && st.Devices.ContainsName(devname) {
+		return nil, fmt.Errorf(gettext.Gettext("device already exists\n"))
 	}
 	newdev["type"] = devtype
 	if st.Devices == nil {

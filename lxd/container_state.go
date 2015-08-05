@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -13,7 +12,7 @@ import (
 
 func containerStateGet(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	c, err := newLxdContainer(name, d)
+	c, err := containerLXDLoad(d, name)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -24,39 +23,6 @@ func containerStateGet(d *Daemon, r *http.Request) Response {
 	}
 
 	return SyncResponse(true, state.Status)
-}
-
-func deactivateStorage(d *Daemon, c *lxdContainer) error {
-	cpath := shared.VarPath("lxc", c.name)
-	_, vgnameIsSet, err := getServerConfigValue(d, "core.lvm_vg_name")
-	if err != nil {
-		return fmt.Errorf("Error checking server config: %v", err)
-	}
-
-	if vgnameIsSet {
-		output, err := exec.Command("umount", cpath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to unmount container path '%s'.\nError: %v\nOutput: %s", cpath, err, output)
-		}
-	}
-	return nil
-}
-
-func activateStorage(d *Daemon, c *lxdContainer) error {
-	cpath := shared.VarPath("lxc", c.name)
-	vgname, vgnameIsSet, err := getServerConfigValue(d, "core.lvm_vg_name")
-	if err != nil {
-		return fmt.Errorf("Error checking server config: %v", err)
-	}
-
-	if vgnameIsSet {
-		lvpath := fmt.Sprintf("/dev/%s/%s", vgname, c.name)
-		output, err := exec.Command("mount", "-o", "discard", lvpath, cpath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("Error mounting snapshot LV: %v\noutput:'%s'", err, output)
-		}
-	}
-	return nil
 }
 
 func containerStatePut(d *Daemon, r *http.Request) Response {
@@ -72,7 +38,7 @@ func containerStatePut(d *Daemon, r *http.Request) Response {
 		return BadRequest(err)
 	}
 
-	c, err := newLxdContainer(name, d)
+	c, err := containerLXDLoad(d, name)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -81,9 +47,6 @@ func containerStatePut(d *Daemon, r *http.Request) Response {
 	switch shared.ContainerAction(raw.Action) {
 	case shared.Start:
 		do = func() error {
-			if err = activateStorage(d, c); err != nil {
-				return err
-			}
 			if err = c.Start(); err != nil {
 				return err
 			}
@@ -95,17 +58,11 @@ func containerStatePut(d *Daemon, r *http.Request) Response {
 				if err = c.Stop(); err != nil {
 					return err
 				}
-				if err = deactivateStorage(d, c); err != nil {
-					return err
-				}
 				return nil
 			}
 		} else {
 			do = func() error {
 				if err = c.Shutdown(time.Duration(raw.Timeout) * time.Second); err != nil {
-					return err
-				}
-				if err = deactivateStorage(d, c); err != nil {
 					return err
 				}
 				return nil

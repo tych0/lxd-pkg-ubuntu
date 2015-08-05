@@ -27,7 +27,6 @@ var verbose = gnuflag.Bool("v", false, "Enables verbose mode.")
 var syslogFlag = gnuflag.Bool("syslog", false, "Enables syslog logging.")
 var logfile = gnuflag.String("logfile", "", "Logfile to log to (e.g., /var/log/lxd/lxd.log).")
 var debug = gnuflag.Bool("debug", false, "Enables debug mode.")
-var listenAddr = gnuflag.String("tcp", "", "TCP address <addr:port> to listen on in addition to the unix socket (e.g., 127.0.0.1:8443).")
 var group = gnuflag.String("group", "", "Group which owns the shared socket.")
 var help = gnuflag.Bool("help", false, "Print this help message.")
 var version = gnuflag.Bool("version", false, "Print LXD's version number and exit.")
@@ -82,7 +81,12 @@ func run() error {
 	if *syslogFlag {
 		syslog = "lxd"
 	}
-	shared.SetLogger(syslog, *logfile, *verbose, *debug)
+
+	err := shared.SetLogger(syslog, *logfile, *verbose, *debug)
+	if err != nil {
+		fmt.Printf("%s", err)
+		return nil
+	}
 
 	if gnuflag.NArg() != 0 {
 		gnuflag.Usage()
@@ -120,7 +124,7 @@ func run() error {
 		}()
 	}
 
-	d, err := StartDaemon(*listenAddr)
+	d, err := StartDaemon()
 
 	if err != nil {
 		if d != nil && d.db != nil {
@@ -128,8 +132,6 @@ func run() error {
 		}
 		return err
 	}
-
-	defer d.db.Close()
 
 	var ret error
 	var wg sync.WaitGroup
@@ -140,7 +142,9 @@ func run() error {
 		signal.Notify(ch, syscall.SIGPWR)
 		sig := <-ch
 
-		shared.Debugf("Received '%s signal', shutting down containers.\n", sig)
+		shared.Log.Info(
+			fmt.Sprintf("Received '%s signal', shutting down containers.", sig))
+
 		ret = d.Stop()
 
 		containersShutdown(d)
@@ -154,7 +158,7 @@ func run() error {
 		signal.Notify(ch, syscall.SIGTERM)
 		sig := <-ch
 
-		shared.Debugf("Received '%s signal', exiting.\n", sig)
+		shared.Log.Info(fmt.Sprintf("Received '%s signal', exiting.\n", sig))
 		ret = d.Stop()
 		wg.Done()
 	}()

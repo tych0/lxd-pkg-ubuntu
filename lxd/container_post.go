@@ -2,10 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"net/http"
-	"os"
 
 	"github.com/gorilla/mux"
 	"github.com/lxc/lxd/lxd/migration"
@@ -14,7 +12,7 @@ import (
 
 func containerPost(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	c, err := newLxdContainer(name, d)
+	c, err := containerLXDLoad(d, name)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -30,7 +28,11 @@ func containerPost(d *Daemon, r *http.Request) Response {
 	}
 
 	if body.Migration {
-		ws, err := migration.NewMigrationSource(c.c)
+		lxc, err := c.LXContainerGet()
+		if err != nil {
+			return InternalError(err)
+		}
+		ws, err := migration.NewMigrationSource(lxc)
 		if err != nil {
 			return InternalError(err)
 		}
@@ -38,36 +40,8 @@ func containerPost(d *Daemon, r *http.Request) Response {
 		return AsyncResponseWithWs(ws, nil)
 	}
 
-	if c.c.Running() {
-		return BadRequest(fmt.Errorf("renaming of running container not allowed"))
-	}
-
-	args := DbCreateContainerArgs{
-		d:            d,
-		name:         body.Name,
-		ctype:        cTypeRegular,
-		config:       c.config,
-		profiles:     c.profiles,
-		ephem:        c.ephemeral,
-		baseImage:    c.config["volatile.baseImage"],
-		architecture: c.architecture,
-	}
-
-	_, err = dbCreateContainer(args)
-	if err != nil {
-		return SmartError(err)
-	}
-
 	run := func() error {
-		oldPath := fmt.Sprintf("%s/", shared.VarPath("lxc", c.name))
-		newPath := fmt.Sprintf("%s/", shared.VarPath("lxc", body.Name))
-
-		if err := os.Rename(oldPath, newPath); err != nil {
-			return err
-		}
-
-		removeContainer(d, c.name)
-		return nil
+		return c.Rename(body.Name)
 	}
 
 	return AsyncResponse(shared.OperationWrap(run), nil)

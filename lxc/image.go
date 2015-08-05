@@ -454,14 +454,6 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 	}
 }
 
-func fromUrl(url string, prefix string) string {
-	offset := len(prefix)
-	if len(url) < offset+1 {
-		return ""
-	}
-	return url[offset:]
-}
-
 func dereferenceAlias(d *lxd.Client, inName string) string {
 	result := d.GetAlias(inName)
 	if result == "" {
@@ -514,6 +506,7 @@ func showImages(images []shared.ImageInfo) error {
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
+	table.SetColWidth(50)
 	table.SetHeader([]string{"ALIAS", "FINGERPRINT", "PUBLIC", "DESCRIPTION", "ARCH", "UPLOAD DATE"})
 
 	for _, v := range data {
