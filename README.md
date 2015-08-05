@@ -44,6 +44,10 @@ To run the testsuite, you'll also need:
 
     sudo apt-get install curl gettext jq sqlite3
 
+To use LVM backing stores, you'll need:
+
+    sudo apt-get install lvm2 thin-provisioning-tools
+
 ### Building the tools
 
 LXD consists of two binaries, a client called `lxc` and a server called `lxd`.
@@ -80,7 +84,7 @@ LXD has two parts, the daemon (the `lxd` binary), and the client (the `lxc`
 binary). Now that the daemon is all configured and running (either via the
 packaging or via the from-source instructions above), you can import some images:
 
-    $GOPATH/src/github.com/lxc/lxd/scripts/lxd-images import lxc ubuntu trusty amd64 --alias ubuntu --alias ubuntu/trusty --alias ubuntu/trusty/amd64
+    $GOPATH/src/github.com/lxc/lxd/scripts/lxd-images import ubuntu --alias ubuntu
     $GOPATH/src/github.com/lxc/lxd/scripts/lxd-images import lxc debian wheezy amd64 --alias debian --alias debian/wheezy --alias debian/wheezy/amd64
 
 With those two images imported into LXD, you can now start containers:

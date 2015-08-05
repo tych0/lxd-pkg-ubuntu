@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -153,6 +154,7 @@ func (s *execWs) Do() shared.OperationResult {
 					err = shared.SetSize(int(ptys[0].Fd()), winchWidth, winchHeight)
 					if err != nil {
 						shared.Debugf("Failed to set window size to: %dx%d", winchWidth, winchHeight)
+						continue
 					}
 				}
 
@@ -209,12 +211,12 @@ func (s *execWs) Do() shared.OperationResult {
 
 func containerExecPost(d *Daemon, r *http.Request) Response {
 	name := mux.Vars(r)["name"]
-	c, err := newLxdContainer(name, d)
+	c, err := containerLXDLoad(d, name)
 	if err != nil {
 		return SmartError(err)
 	}
 
-	if !c.c.Running() {
+	if !c.IsRunning() {
 		return BadRequest(fmt.Errorf("Container is not running."))
 	}
 
@@ -232,6 +234,12 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 	opts.ClearEnv = true
 	opts.Env = []string{}
 
+	for k, v := range c.ConfigGet().Config {
+		if strings.HasPrefix(k, "environment.") {
+			opts.Env = append(opts.Env, fmt.Sprintf("%s=%s", strings.TrimPrefix(k, "environment."), v))
+		}
+	}
+
 	if post.Environment != nil {
 		for k, v := range post.Environment {
 			if k == "HOME" {
@@ -244,8 +252,9 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 	if post.WaitForWS {
 		ws := &execWs{}
 		ws.fds = map[int]string{}
-		if c.idmapset != nil {
-			ws.rootUid, ws.rootGid = c.idmapset.ShiftIntoNs(0, 0)
+		idmapset, err := c.IdmapSetGet()
+		if idmapset != nil {
+			ws.rootUid, ws.rootGid = idmapset.ShiftIntoNs(0, 0)
 		}
 		ws.conns = map[int]*websocket.Conn{}
 		ws.conns[-1] = nil
@@ -267,7 +276,11 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 		}
 
 		ws.command = post.Command
-		ws.container = c.c
+		lxContainer, err := c.LXContainerGet()
+		if err != nil {
+			return InternalError(err)
+		}
+		ws.container = lxContainer
 
 		return AsyncResponseWithWs(ws, nil)
 	}
@@ -285,7 +298,12 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 		opts.StdoutFd = nullfd
 		opts.StderrFd = nullfd
 
-		return runCommand(c.c, post.Command, opts)
+		lxContainer, err := c.LXContainerGet()
+		if err != nil {
+			return shared.OperationError(err)
+		}
+
+		return runCommand(lxContainer, post.Command, opts)
 	}
 
 	return AsyncResponse(run, nil)

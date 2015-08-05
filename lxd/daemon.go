@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/crypto/scrypt"
+
 	"github.com/gorilla/mux"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stgraber/lxd-go-systemd/activation"
@@ -24,6 +28,11 @@ import (
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
+)
+
+const (
+	pwSaltBytes = 32
+	pwHashBytes = 64
 )
 
 // A Daemon can respond to requests from a shared client.
@@ -39,12 +48,15 @@ type Daemon struct {
 	mux           *mux.Router
 	tomb          tomb.Tomb
 
-	localSockets  []net.Listener
-	remoteSockets []net.Listener
+	Storage storage
+
+	Sockets []net.Listener
 
 	tlsconfig *tls.Config
 
 	devlxd *net.UnixListener
+
+	configValues map[string]string
 }
 
 // Command is the basic structure for every API call.
@@ -141,7 +153,7 @@ func (d *Daemon) httpGetFile(url string) (*http.Response, error) {
 func readMyCert() (string, string, error) {
 	certf := shared.VarPath("server.crt")
 	keyf := shared.VarPath("server.key")
-	shared.Log.Debug("looking for existing certificates:", log.Ctx{"cert": certf, "key": keyf})
+	shared.Log.Info("looking for existing certificates:", log.Ctx{"cert": certf, "key": keyf})
 
 	err := shared.FindOrGenCert(certf, keyf)
 
@@ -197,13 +209,21 @@ func (d *Daemon) createCmd(version string, c Command) {
 		w.Header().Set("Content-Type", "application/json")
 
 		if d.isTrustedClient(r) {
-			shared.Log.Info("handling", log.Ctx{"method": r.Method, "url": r.URL.RequestURI()})
+			shared.Log.Info(
+				"handling",
+				log.Ctx{"method": r.Method, "url": r.URL.RequestURI(), "ip": r.RemoteAddr})
 		} else if r.Method == "GET" && c.untrustedGet {
-			shared.Log.Info("allowing untrusted GET", log.Ctx{"url": r.URL.RequestURI()})
+			shared.Log.Info(
+				"allowing untrusted GET",
+				log.Ctx{"url": r.URL.RequestURI(), "ip": r.RemoteAddr})
 		} else if r.Method == "POST" && c.untrustedPost {
-			shared.Log.Info("allowing untrusted POST", log.Ctx{"url": r.URL.RequestURI()})
+			shared.Log.Info(
+				"allowing untrusted POST",
+				log.Ctx{"url": r.URL.RequestURI(), "ip": r.RemoteAddr})
 		} else {
-			shared.Log.Warn("rejecting request from untrusted client")
+			shared.Log.Warn(
+				"rejecting request from untrusted client",
+				log.Ctx{"ip": r.RemoteAddr})
 			Forbidden.Render(w)
 			return
 		}
@@ -266,14 +286,108 @@ func (d *Daemon) createCmd(version string, c Command) {
 	})
 }
 
+func (d *Daemon) SetupStorageDriver() error {
+	vgName, err := d.ConfigValueGet("core.lvm_vg_name")
+	if err != nil {
+		return fmt.Errorf("Couldn't read config: %s", err)
+	}
+	if vgName != "" {
+		d.Storage, err = newStorage(d, storageTypeLvm)
+		if err != nil {
+			shared.Logf("Could not initialize storage type LVM: %s - falling back to dir", err)
+		} else {
+			return nil
+		}
+	} else if d.BackingFs == "btrfs" {
+		d.Storage, err = newStorage(d, storageTypeBtrfs)
+		if err != nil {
+			shared.Logf("Could not initialize storage type btrfs: %s - falling back to dir", err)
+		} else {
+			return nil
+		}
+	}
+
+	d.Storage, err = newStorage(d, storageTypeDir)
+
+	return err
+}
+
+func setupSharedMounts() error {
+	path := shared.VarPath("shmounts")
+	if shared.IsOnSharedMount(path) {
+		// / may already be ms-shared, or shmounts may have
+		// been mounted by a previous lxd run
+		return nil
+	}
+	if !shared.PathExists(path) {
+		if err := os.Mkdir(path, 0755); err != nil {
+			return err
+		}
+	}
+	if err := syscall.Mount(path, path, "none", syscall.MS_BIND, ""); err != nil {
+		return err
+	}
+	var flags uintptr = syscall.MS_SHARED | syscall.MS_REC
+	if err := syscall.Mount(path, path, "none", flags, ""); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *Daemon) UpdateHTTPsPort(oldAddress string, newAddress string) error {
+	var sockets []net.Listener
+
+	if oldAddress != "" {
+		_, _, err := net.SplitHostPort(oldAddress)
+		if err != nil {
+			oldAddress = fmt.Sprintf("%s:%s", oldAddress, shared.DefaultPort)
+		}
+
+		for _, socket := range d.Sockets {
+			if socket.Addr().String() == oldAddress {
+				socket.Close()
+			} else {
+				sockets = append(sockets, socket)
+			}
+		}
+	} else {
+		sockets = d.Sockets
+	}
+
+	if newAddress != "" {
+		_, _, err := net.SplitHostPort(newAddress)
+		if err != nil {
+			newAddress = fmt.Sprintf("%s:%s", newAddress, shared.DefaultPort)
+		}
+
+		tlsConfig, err := shared.GetTLSConfig(d.certf, d.keyf)
+		if err != nil {
+			return err
+		}
+
+		tcpl, err := tls.Listen("tcp", newAddress, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("cannot listen on https socket: %v", err)
+		}
+
+		d.tomb.Go(func() error { return http.Serve(tcpl, d.mux) })
+		sockets = append(sockets, tcpl)
+	}
+
+	d.Sockets = sockets
+	return nil
+}
+
 // StartDaemon starts the shared daemon with the provided configuration.
-func StartDaemon(listenAddr string) (*Daemon, error) {
+func StartDaemon() (*Daemon, error) {
 	d := &Daemon{}
 
 	/* Setup logging */
 	if shared.Log == nil {
 		shared.SetLogger("", "", true, true)
 	}
+
+	shared.Log.Info("LXD is starting.")
 
 	/* Get the list of supported architectures */
 	var architectures = []int{}
@@ -307,21 +421,39 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 	d.architectures = architectures
 
 	/* Create required paths */
-	d.lxcpath = shared.VarPath("lxc")
-	err = os.MkdirAll(shared.VarPath("/"), 0755)
-	if err != nil {
-		return nil, err
-	}
-
+	d.lxcpath = shared.VarPath("containers")
 	err = os.MkdirAll(d.lxcpath, 0755)
 	if err != nil {
 		return nil, err
 	}
 
+	// Create default directories
+	if err := os.MkdirAll(shared.VarPath("images"), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(shared.VarPath("snapshots"), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(shared.VarPath("devlxd"), 0755); err != nil {
+		return nil, err
+	}
+
 	/* Detect the filesystem */
-	d.BackingFs, err = shared.GetFilesystem(d.lxcpath)
+	d.BackingFs, err = filesystemDetect(d.lxcpath)
 	if err != nil {
 		shared.Log.Error("Error detecting backing fs", log.Ctx{"err": err})
+	}
+
+	/* Read the uid/gid allocation */
+	d.IdmapSet, err = shared.DefaultIdmapSet()
+	if err != nil {
+		shared.Log.Warn("error reading idmap", log.Ctx{"err": err.Error()})
+		shared.Log.Warn("operations requiring idmap will not be available")
+	} else {
+		shared.Log.Info("Default uid/gid map:")
+		for _, lxcmap := range d.IdmapSet.ToLxcString() {
+			shared.Log.Info(strings.TrimRight(" - "+lxcmap, "\n"))
+		}
 	}
 
 	/* Initialize the database */
@@ -344,27 +476,24 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 		return nil, err
 	}
 
-	/* Read the uid/gid allocation */
-	d.IdmapSet, err = shared.DefaultIdmapSet()
-	if err != nil {
-		shared.Log.Warn("error reading idmap", log.Ctx{"err": err.Error()})
-		shared.Log.Warn("operations requiring idmap will not be available")
-	} else {
-		shared.Log.Debug("Default uid/gid map:")
-		for _, lxcmap := range d.IdmapSet.ToLxcString() {
-			shared.Log.Debug(strings.TrimRight(" - "+lxcmap, "\n"))
-		}
-	}
-
 	/* Setup /dev/lxd */
 	d.devlxd, err = createAndBindDevLxd()
 	if err != nil {
 		return nil, err
 	}
 
+	if err := setupSharedMounts(); err != nil {
+		return nil, err
+	}
+
 	/* Restart containers */
 	containersRestart(d)
 	containersWatch(d)
+
+	err = d.SetupStorageDriver()
+	if err != nil {
+		return nil, fmt.Errorf("Failed to setup storage: %s", err)
+	}
 
 	/* Setup the web server */
 	d.mux = mux.NewRouter()
@@ -389,22 +518,21 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 		return nil, err
 	}
 
-	var localSockets []net.Listener
-	var remoteSockets []net.Listener
+	var sockets []net.Listener
 
 	if len(listeners) > 0 {
-		shared.Log.Debug("LXD is socket activated.")
+		shared.Log.Info("LXD is socket activated.")
 
 		for _, listener := range listeners {
 			if shared.PathExists(listener.Addr().String()) {
-				localSockets = append(localSockets, listener)
+				sockets = append(sockets, listener)
 			} else {
 				tlsListener := tls.NewListener(listener, tlsConfig)
-				remoteSockets = append(remoteSockets, tlsListener)
+				sockets = append(sockets, tlsListener)
 			}
 		}
 	} else {
-		shared.Log.Debug("LXD isn't socket activated.")
+		shared.Log.Info("LXD isn't socket activated.")
 
 		localSocketPath := shared.VarPath("unix.socket")
 
@@ -447,29 +575,30 @@ func StartDaemon(listenAddr string) (*Daemon, error) {
 			return nil, err
 		}
 
-		localSockets = append(localSockets, unixl)
-
-		if listenAddr != "" {
-			tcpl, err := tls.Listen("tcp", listenAddr, tlsConfig)
-			if err != nil {
-				return nil, fmt.Errorf("cannot listen on unix socket: %v", err)
-			}
-
-			remoteSockets = append(remoteSockets, tcpl)
-		}
+		sockets = append(sockets, unixl)
 	}
 
-	d.localSockets = localSockets
-	d.remoteSockets = remoteSockets
+	listenAddr, err := d.ConfigValueGet("core.https_address")
+	if err != nil {
+		return nil, err
+	}
+
+	if listenAddr != "" {
+		tcpl, err := tls.Listen("tcp", listenAddr, tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("cannot listen on https socket: %v", err)
+		}
+
+		sockets = append(sockets, tcpl)
+	}
+
+	d.Sockets = sockets
 
 	d.tomb.Go(func() error {
-		for _, socket := range d.localSockets {
-			shared.Log.Debug(" - binding local socket", log.Ctx{"socket": socket.Addr()})
-			d.tomb.Go(func() error { return http.Serve(socket, d.mux) })
-		}
-		for _, socket := range d.remoteSockets {
-			shared.Log.Debug(" - binding remote socket", log.Ctx{"socket": socket.Addr()})
-			d.tomb.Go(func() error { return http.Serve(socket, d.mux) })
+		for _, socket := range d.Sockets {
+			shared.Log.Info(" - binding socket", log.Ctx{"socket": socket.Addr()})
+			current_socket := socket
+			d.tomb.Go(func() error { return http.Serve(current_socket, d.mux) })
 		}
 
 		d.tomb.Go(func() error {
@@ -494,17 +623,62 @@ func (d *Daemon) CheckTrustState(cert x509.Certificate) bool {
 	return false
 }
 
+func (d *Daemon) ListRegularContainers() ([]string, error) {
+	q := fmt.Sprintf("SELECT name FROM containers WHERE type=?")
+	inargs := []interface{}{cTypeRegular}
+	var name string
+	outfmt := []interface{}{name}
+
+	list := []string{}
+	result, err := dbQueryScan(d.db, q, inargs, outfmt)
+	if err != nil {
+		return list, err
+	}
+	for _, r := range result {
+		list = append(list, r[0].(string))
+	}
+	return list, nil
+}
+
+func (d *Daemon) numRunningContainers() (int, error) {
+	results, err := d.ListRegularContainers()
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, r := range results {
+		container, err := containerLXDLoad(d, r)
+		if err != nil {
+			continue
+		}
+
+		if container.IsRunning() {
+			count = count + 1
+		}
+	}
+
+	return count, nil
+}
+
 var errStop = fmt.Errorf("requested stop")
 
 // Stop stops the shared daemon.
 func (d *Daemon) Stop() error {
 	d.tomb.Kill(errStop)
-	for _, socket := range d.localSockets {
+	for _, socket := range d.Sockets {
 		socket.Close()
 	}
-	for _, socket := range d.remoteSockets {
-		socket.Close()
+
+	if n, err := d.numRunningContainers(); err != nil || n == 0 {
+		shared.Debugf("daemon.Stop: unmounting shmounts: err %s n %d", err, n)
+		syscall.Unmount(shared.VarPath("shmounts"), syscall.MNT_DETACH)
+		os.RemoveAll(shared.VarPath("shmounts"))
+	} else {
+		shared.Debugf("daemon.Stop: not unmounting shmounts")
 	}
+
+	d.db.Close()
 
 	d.devlxd.Close()
 
@@ -513,4 +687,129 @@ func (d *Daemon) Stop() error {
 		return nil
 	}
 	return err
+}
+
+// ConfigKeyIsValid returns if the given key is a known config value.
+func (d *Daemon) ConfigKeyIsValid(key string) bool {
+	switch key {
+	case "core.https_address":
+		return true
+	case "core.trust_password":
+		return true
+	case "core.lvm_vg_name":
+		return true
+	case "core.lvm_thinpool_name":
+		return true
+	}
+
+	return false
+}
+
+// ConfigValueGet returns a config value from the memory,
+// calls ConfigValuesGet if required.
+// It returns a empty result if the config key isn't given.
+func (d *Daemon) ConfigValueGet(key string) (string, error) {
+	if d.configValues == nil {
+		if _, err := d.ConfigValuesGet(); err != nil {
+			return "", err
+		}
+	}
+
+	if val, ok := d.configValues[key]; ok {
+		return val, nil
+	}
+
+	return "", nil
+}
+
+// ConfigValuesGet fetches all config values and stores them in memory.
+func (d *Daemon) ConfigValuesGet() (map[string]string, error) {
+	if d.configValues == nil {
+		var err error
+		d.configValues, err = dbConfigValuesGet(d.db)
+		if err != nil {
+			return d.configValues, err
+		}
+	}
+
+	return d.configValues, nil
+}
+
+// ConfigValueSet sets a new or updates a config value,
+// it updates the value in the DB and in memory.
+func (d *Daemon) ConfigValueSet(key string, value string) error {
+	if err := dbConfigValueSet(d.db, key, value); err != nil {
+		return err
+	}
+
+	if d.configValues == nil {
+		if _, err := d.ConfigValuesGet(); err != nil {
+			return err
+		}
+	}
+
+	if value == "" {
+		delete(d.configValues, key)
+	} else {
+		d.configValues[key] = value
+	}
+
+	return nil
+}
+
+// PasswordSet sets the password to the new value.
+func (d *Daemon) PasswordSet(password string) error {
+	shared.Log.Info("setting new password")
+	var value = password
+	if password != "" {
+		buf := make([]byte, pwSaltBytes)
+		_, err := io.ReadFull(rand.Reader, buf)
+		if err != nil {
+			return err
+		}
+
+		hash, err := scrypt.Key([]byte(password), buf, 1<<14, 8, 1, pwHashBytes)
+		if err != nil {
+			return err
+		}
+
+		buf = append(buf, hash...)
+		value = hex.EncodeToString(buf)
+	}
+
+	err := d.ConfigValueSet("core.trust_password", value)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// PasswordCheck checks if the given password is the same
+// as we have in the DB.
+func (d *Daemon) PasswordCheck(password string) bool {
+	value, err := d.ConfigValueGet("core.trust_password")
+	if err != nil {
+		shared.Log.Error("verifyAdminPwd", log.Ctx{"err": err})
+		return false
+	}
+
+	buff, err := hex.DecodeString(value)
+	if err != nil {
+		shared.Log.Error("hex decode failed", log.Ctx{"err": err})
+		return false
+	}
+
+	salt := buff[0:pwSaltBytes]
+	hash, err := scrypt.Key([]byte(password), salt, 1<<14, 8, 1, pwHashBytes)
+	if err != nil {
+		shared.Log.Error("failed to create hash to check", log.Ctx{"err": err})
+		return false
+	}
+	if !bytes.Equal(hash, buff[pwSaltBytes:]) {
+		shared.Log.Error("Bad password received", log.Ctx{"err": err})
+		return false
+	}
+	shared.Log.Debug("Verified the admin password")
+	return true
 }

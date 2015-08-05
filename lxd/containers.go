@@ -1,13 +1,9 @@
 package main
 
 import (
-	"archive/tar"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,20 +11,9 @@ import (
 	"gopkg.in/lxc/go-lxc.v2"
 
 	"github.com/lxc/lxd/shared"
-)
 
-type lxdContainer struct {
-	c            *lxc.Container
-	daemon       *Daemon
-	id           int
-	name         string
-	config       map[string]string
-	profiles     []string
-	devices      shared.Devices
-	architecture int
-	ephemeral    bool
-	idmapset     *shared.IdmapSet
-}
+	log "gopkg.in/inconshreveable/log15.v2"
+)
 
 type execWs struct {
 	command          []string
@@ -148,18 +133,23 @@ var containerExecCmd = Command{
 	post: containerExecPost,
 }
 
-func containerWatchEphemeral(c *lxdContainer) {
+func containerWatchEphemeral(d *Daemon, c container) {
 	go func() {
-		c.c.Wait(lxc.STOPPED, -1*time.Second)
-		c.c.Wait(lxc.RUNNING, 1*time.Second)
-		c.c.Wait(lxc.STOPPED, -1*time.Second)
-
-		_, err := dbGetContainerID(c.daemon.db, c.name)
+		lxContainer, err := c.LXContainerGet()
 		if err != nil {
 			return
 		}
 
-		removeContainer(c.daemon, c.name)
+		lxContainer.Wait(lxc.STOPPED, -1*time.Second)
+		lxContainer.Wait(lxc.RUNNING, 1*time.Second)
+		lxContainer.Wait(lxc.STOPPED, -1*time.Second)
+
+		_, err = dbContainerIDGet(d.db, c.NameGet())
+		if err != nil {
+			return
+		}
+
+		c.Delete()
 	}()
 }
 
@@ -175,13 +165,13 @@ func containersWatch(d *Daemon) error {
 	}
 
 	for _, r := range result {
-		container, err := newLxdContainer(string(r[0].(string)), d)
+		container, err := containerLXDLoad(d, string(r[0].(string)))
 		if err != nil {
 			return err
 		}
 
-		if container.ephemeral == true && container.c.State() != lxc.STOPPED {
-			containerWatchEphemeral(container)
+		if container.IsEmpheral() && container.IsRunning() {
+			containerWatchEphemeral(d, container)
 		}
 	}
 
@@ -211,57 +201,44 @@ func containersRestart(d *Daemon) error {
 	}
 
 	for _, r := range result {
-		container, err := newLxdContainer(string(r[0].(string)), d)
+		container, err := containerLXDLoad(d, string(r[0].(string)))
 		if err != nil {
 			return err
 		}
 
-		err = templateApply(container, "start")
-		if err != nil {
-			return err
-		}
-
-		if err = activateStorage(d, container); err != nil {
-			return err
-		}
-		container.c.Start()
+		container.Start()
 	}
 
 	return nil
 }
 
 func containersShutdown(d *Daemon) error {
-	q := fmt.Sprintf("SELECT name FROM containers WHERE type=?")
-	inargs := []interface{}{cTypeRegular}
-	var name string
-	outfmt := []interface{}{name}
-
-	result, err := dbQueryScan(d.db, q, inargs, outfmt)
+	results, err := d.ListRegularContainers()
 	if err != nil {
 		return err
 	}
 
 	var wg sync.WaitGroup
 
-	for _, r := range result {
-		container, err := newLxdContainer(string(r[0].(string)), d)
+	for _, r := range results {
+		container, err := containerLXDLoad(d, r)
 		if err != nil {
 			return err
 		}
 
-		if container.c.State() != lxc.STOPPED {
-			_, err = dbExec(d.db, "UPDATE containers SET power_state=1 WHERE name=?", container.name)
+		if container.IsRunning() {
+			_, err = dbExec(
+				d.db,
+				"UPDATE containers SET power_state=1 WHERE name=?",
+				container.NameGet())
 			if err != nil {
 				return err
 			}
 
 			wg.Add(1)
 			go func() {
-				container.c.Shutdown(time.Second * 30)
-				container.c.Stop()
-				if err = deactivateStorage(d, container); err != nil {
-					shared.Logf("Error deactivating storage after container stop: %v", err)
-				}
+				container.Shutdown(time.Second * 30)
+				container.Stop()
 				wg.Done()
 			}()
 		}
@@ -272,42 +249,25 @@ func containersShutdown(d *Daemon) error {
 }
 
 func containerDeleteSnapshots(d *Daemon, cname string) error {
-	prefix := fmt.Sprintf("%s/", cname)
-	length := len(prefix)
-	q := "SELECT name, id FROM containers WHERE type=? AND SUBSTR(name,1,?)=?"
-	var id int
-	var sname string
-	inargs := []interface{}{cTypeSnapshot, length, prefix}
-	outfmt := []interface{}{sname, id}
-	results, err := dbQueryScan(d.db, q, inargs, outfmt)
+	results, err := dbContainerGetSnapshots(d.db, cname)
 	if err != nil {
 		return err
 	}
 
-	var ids []int
-
-	backingFs, err := shared.GetFilesystem(shared.VarPath("lxc", cname))
-	if err != nil && !os.IsNotExist(err) {
-		shared.Debugf("Error cleaning up snapshots: %s\n", err)
-		return err
-	}
-
-	for _, r := range results {
-		sname = r[0].(string)
-		id = r[1].(int)
-		ids = append(ids, id)
-		cdir := shared.VarPath("lxc", cname, "snapshots", sname)
-
-		if backingFs == "btrfs" {
-			btrfsDeleteSubvol(cdir)
-		}
-		os.RemoveAll(cdir)
-	}
-
-	for _, id := range ids {
-		_, err = dbExec(d.db, "DELETE FROM containers WHERE id=?", id)
+	for _, sname := range results {
+		sc, err := containerLXDLoad(d, sname)
 		if err != nil {
-			return err
+			shared.Log.Error(
+				"containerDeleteSnapshots: Failed to load the snapshotcontainer",
+				log.Ctx{"container": cname, "snapshot": sname})
+
+			continue
+		}
+
+		if err := sc.Delete(); err != nil {
+			shared.Log.Error(
+				"containerDeleteSnapshots: Failed to load delete a snapshotcontainer",
+				log.Ctx{"container": cname, "snapshot": sname})
 		}
 	}
 
@@ -329,8 +289,6 @@ func startContainer(args []string) error {
 	lxcpath := args[2]
 	configPath := args[3]
 
-	defer os.Remove(configPath)
-
 	c, err := lxc.NewContainer(name, lxcpath)
 	if err != nil {
 		return fmt.Errorf("Error initializing container for start: %q", err)
@@ -340,128 +298,12 @@ func startContainer(args []string) error {
 		return fmt.Errorf("Error opening startup config file: %q", err)
 	}
 
-	return c.Start()
-}
-
-func (d *lxdContainer) tarStoreFile(linkmap map[uint64]string, offset int, tw *tar.Writer, path string, fi os.FileInfo) error {
-	var err error
-	var major, minor, nlink int
-	var ino uint64
-
-	link := ""
-	if fi.Mode()&os.ModeSymlink == os.ModeSymlink {
-		link, err = os.Readlink(path)
-		if err != nil {
-			return err
-		}
-	}
-	hdr, err := tar.FileInfoHeader(fi, link)
+	err = c.Start()
 	if err != nil {
-		return err
-	}
-	hdr.Name = path[offset:]
-	if fi.IsDir() || fi.Mode()&os.ModeSymlink == os.ModeSymlink {
-		hdr.Size = 0
+		os.Remove(configPath)
 	} else {
-		hdr.Size = fi.Size()
+		shared.FileMove(configPath, shared.LogPath(name, "lxc.conf"))
 	}
 
-	hdr.Uid, hdr.Gid, major, minor, ino, nlink, err = shared.GetFileStat(path)
-	if err != nil {
-		return fmt.Errorf("error getting file info: %s\n", err)
-	}
-
-	// unshift the id under /rootfs/ for unpriv containers
-	if !d.isPrivileged() && strings.HasPrefix(hdr.Name, "/rootfs") {
-		hdr.Uid, hdr.Gid = d.idmapset.ShiftFromNs(hdr.Uid, hdr.Gid)
-		if hdr.Uid == -1 || hdr.Gid == -1 {
-			return nil
-		}
-	}
-	if major != -1 {
-		hdr.Devmajor = int64(major)
-		hdr.Devminor = int64(minor)
-	}
-
-	// If it's a hardlink we've already seen use the old name
-	if fi.Mode().IsRegular() && nlink > 1 {
-		if firstpath, found := linkmap[ino]; found {
-			hdr.Typeflag = tar.TypeLink
-			hdr.Linkname = firstpath
-			hdr.Size = 0
-		} else {
-			linkmap[ino] = hdr.Name
-		}
-	}
-
-	// todo - handle xattrs
-
-	if err := tw.WriteHeader(hdr); err != nil {
-		return fmt.Errorf("error writing header: %s\n", err)
-	}
-
-	if hdr.Typeflag == tar.TypeReg {
-		f, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("tarStoreFile: error opening file: %s\n", err)
-		}
-		defer f.Close()
-		if _, err := io.Copy(tw, f); err != nil {
-			return fmt.Errorf("error copying file %s\n", err)
-		}
-	}
-	return nil
-}
-
-/*
- * Export the container to a unshifted tarfile containing:
- * dir/
- *     metadata.yaml
- *     rootfs/
- */
-func (d *lxdContainer) exportToTar(snap string, w io.Writer) error {
-	if snap != "" && d.c.Running() {
-		return fmt.Errorf("Cannot export a running container as image")
-	}
-
-	tw := tar.NewWriter(w)
-
-	// keep track of the first path we saw for each path with nlink>1
-	linkmap := map[uint64]string{}
-
-	cDir := shared.VarPath("lxc", d.name)
-
-	// Path inside the tar image is the pathname starting after cDir
-	offset := len(cDir) + 1
-
-	fnam := filepath.Join(cDir, "metadata.yaml")
-	writeToTar := func(path string, fi os.FileInfo, err error) error {
-		if err := d.tarStoreFile(linkmap, offset, tw, path, fi); err != nil {
-			shared.Debugf("error tarring up %s: %s\n", path, err)
-			return err
-		}
-		return nil
-	}
-
-	fnam = filepath.Join(cDir, "metadata.yaml")
-	if shared.PathExists(fnam) {
-		fi, err := os.Lstat(fnam)
-		if err != nil {
-			shared.Debugf("Error statting %s during exportToTar\n", fnam)
-			tw.Close()
-			return err
-		}
-		if err := d.tarStoreFile(linkmap, offset, tw, fnam, fi); err != nil {
-			shared.Debugf("exportToTar: error writing to tarfile: %s\n", err)
-			tw.Close()
-			return err
-		}
-	}
-	fnam = filepath.Join(cDir, "rootfs")
-	filepath.Walk(fnam, writeToTar)
-	fnam = filepath.Join(cDir, "templates")
-	if shared.PathExists(fnam) {
-		filepath.Walk(fnam, writeToTar)
-	}
-	return tw.Close()
+	return err
 }

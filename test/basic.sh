@@ -10,13 +10,8 @@ gen_third_cert() {
 }
 
 test_basic_usage() {
-  if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
-    if [ -e "$LXD_TEST_IMAGE" ]; then
-        lxc image import $LXD_TEST_IMAGE --alias testimage
-    else
-        ../scripts/lxd-images import busybox --alias testimage
-    fi
-  fi
+
+  ensure_import_testimage
 
   # Test image export
   sum=$(lxc image info testimage | grep ^Fingerprint | cut -d' ' -f2)
@@ -48,6 +43,8 @@ test_basic_usage() {
 
   # Test container rename
   lxc move foo bar
+  lxc list | grep -v foo
+  lxc list | grep bar
 
   # Test container copy
   lxc copy bar foo
@@ -77,6 +74,8 @@ test_basic_usage() {
 
   # Delete the bar container we've used for several tests
   lxc delete bar
+	# lxc delete should also delete all snapshots of bar
+	[ ! -d ${LXD_DIR}/snapshots/bar ]
 
   # Test randomly named container creation
   lxc init testimage
@@ -143,11 +142,19 @@ test_basic_usage() {
   rm ${LXD_DIR}/out
 
   # This is why we can't have nice things.
-  content=$(cat "${LXD_DIR}/lxc/foo/rootfs/tmp/foo")
+  content=$(cat "${LXD_DIR}/containers/foo/rootfs/tmp/foo")
   [ "$content" = "foo" ]
 
   # cleanup
   lxc delete foo
+
+  # make sure that privileged containers are not world-readable
+  lxc profile create unconfined
+  lxc profile set unconfined security.privileged true
+  lxc init testimage foo2 -p unconfined
+  [ `stat -c "%a" ${LXD_DIR}/containers/foo2` = 700 ]
+  lxc delete foo2
+  lxc profile delete unconfined
 
   # Ephemeral
   lxc launch testimage foo -e
