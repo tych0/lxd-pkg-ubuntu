@@ -1,6 +1,0 @@
-[Socket]
-ListenStream=[::]:8443
-Service=lxd.service
-
-[Install]
-WantedBy=sockets.target

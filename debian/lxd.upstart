@@ -9,4 +9,4 @@ kill timeout 40
 
 respawn
 
-exec /usr/bin/lxd --group lxd --tcp [::]:8443 --logfile=/var/log/lxd/lxd.log
+exec /usr/bin/lxd --group lxd --logfile=/var/log/lxd/lxd.log

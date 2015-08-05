@@ -1,10 +1,10 @@
 [Unit]
 Description=Container hypervisor based on LXC
 After=cgmanager.service lxc.service
-Requires=cgmanager.service lxc.service lxd-unix.socket lxd-tcp.socket
+Requires=cgmanager.service lxc.service lxd-unix.socket
 
 [Service]
-ExecStart=/usr/bin/lxd --group lxd --tcp [::]:8443 --logfile=/var/log/lxd/lxd.log
+ExecStart=/usr/bin/lxd --group lxd --logfile=/var/log/lxd/lxd.log
 KillMode=process
 TimeoutStopSec=40
 KillSignal=SIGPWR
@@ -12,4 +12,4 @@ Restart=on-failure
 LimitNOFILE=65536
 
 [Install]
-Also=lxd-unix.socket lxd-tcp.socket
+Also=lxd-unix.socket

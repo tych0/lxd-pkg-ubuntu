@@ -1,3 +1,12 @@
+lxd (0.15-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.15)
+  * With this release, LXD no longer binds [::]:8443 by default.
+    To restore the previous behavior, please do:
+        lxc config set core.https_address [::]:8443
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 05 Aug 2015 14:48:51 -0400
+
 lxd (0.14-0ubuntu3) wily; urgency=medium
 
   * Have the package create /var/log/lxd.
