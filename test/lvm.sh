@@ -94,9 +94,9 @@ test_delete_with_appropriate_storage() {
     lxc launch testimage reg-container || die "couldn't launch regular container"
     lxc config set core.lvm_vg_name "lxd_test_vg" || die "error setting core.lvm_vg_name config"
     lxc config show | grep "lxd_test_vg" || die "test_vg not in config show output"
-    lxc stop reg-container || die "couldn't stop reg-container"
+    lxc stop reg-container --force || die "couldn't stop reg-container"
     lxc start reg-container || die "couldn't start reg-container"
-    lxc stop reg-container || die "couldn't stop reg-container"
+    lxc stop reg-container --force || die "couldn't stop reg-container"
     lxc delete reg-container || die "couldn't delete reg-container"
     lxc image delete testimage || die "couldn't delete regular image"
 
@@ -106,9 +106,9 @@ test_delete_with_appropriate_storage() {
 
     lxc launch testimage lvm-container || die "couldn't launch lvm container"
     lxc config unset core.lvm_vg_name || die "couldn't unset config"
-    lxc stop lvm-container || die "couldn't stop lvm-container"
+    lxc stop lvm-container --force || die "couldn't stop lvm-container"
     lxc start lvm-container || die "couldn't start lvm-container"
-    lxc stop lvm-container || die "couldn't stop lvm-container"
+    lxc stop lvm-container --force || die "couldn't stop lvm-container"
     lxc delete lvm-container || die "couldn't delete container"
     lxc image delete testimage || die "couldn't delete lvm-backed image"
 
@@ -134,6 +134,12 @@ check_image_exists_in_pool() {
     [ -L "${LXD_DIR}/images/${imagelvname}.lv" ] || die "image symlink doesn't exist"
 }
 
+do_image_import_subtest() {
+    poolname=$1
+    ../scripts/lxd-images import busybox --alias testimage
+    check_image_exists_in_pool testimage $poolname
+}
+
 test_lvm_withpool() {
     poolname=$1
     PREV_LXD_DIR=$LXD_DIR
@@ -151,14 +157,24 @@ test_lvm_withpool() {
         echo " --> Testing with user-supplied thin pool name '$poolname'"
         lxc config set core.lvm_thinpool_name $poolname || die "error setting core.lvm_thinpool_name config"
         lxc config show | grep "$poolname" || die "thin pool name not in config show output."
+        echo " --> only doing minimal image import subtest with user pool name"
+        do_image_import_subtest $poolname
+
+        # check that we can unset configs in this order
+        lxc config unset core.lvm_vg_name
+        lxc config unset core.lvm_thinpool_name
+
+        do_kill_lxd `cat $LXD_DIR/lxd.pid`
+        sleep 3
+        wipe ${LXD_DIR}
+        LXD_DIR=${PREV_LXD_DIR}
+        return
     else
         echo " --> Testing with default thin pool name 'LXDPool'"
         poolname=LXDPool
     fi
 
-    ../scripts/lxd-images import busybox --alias testimage
-
-    check_image_exists_in_pool testimage $poolname
+    do_image_import_subtest $poolname
 
     # launch a container using that image
 

@@ -53,11 +53,12 @@ func storageLVMSetThinPoolNameConfig(d *Daemon, poolname string) error {
 	if err != nil {
 		return fmt.Errorf("Error getting lvm_vg_name config")
 	}
-	if vgname == "" {
-		return fmt.Errorf("Can not set lvm_thinpool_name without lvm_vg_name set.")
-	}
 
 	if poolname != "" {
+		if vgname == "" {
+			return fmt.Errorf("Can not set lvm_thinpool_name without lvm_vg_name set.")
+		}
+
 		poolExists, err := storageLVMThinpoolExists(vgname, poolname)
 		if err != nil {
 			return fmt.Errorf("Error checking for thin pool '%s' in '%s': %v", poolname, vgname, err)
@@ -93,13 +94,13 @@ func storageLVMSetVolumeGroupNameConfig(d *Daemon, vgname string) error {
 
 type storageLvm struct {
 	d      *Daemon
-	sType  storageType
 	vgName string
 
 	storageShared
 }
 
 func (s *storageLvm) Init(config map[string]interface{}) (storage, error) {
+	s.sType = storageTypeLvm
 	s.sTypeName = storageTypeToString(s.sType)
 	if err := s.initShared(); err != nil {
 		return s, err
@@ -123,10 +124,6 @@ func (s *storageLvm) Init(config map[string]interface{}) (storage, error) {
 	}
 
 	return s, nil
-}
-
-func (s *storageLvm) GetStorageType() storageType {
-	return s.sType
 }
 
 func (s *storageLvm) ContainerCreate(container container) error {
@@ -401,7 +398,7 @@ func (s *storageLvm) createDefaultThinPool() (string, error) {
 
 	if err != nil {
 		s.log.Debug(
-			"could not create thin pool",
+			"Could not create thin pool",
 			log.Ctx{
 				"name":   storageLvmDefaultThinPoolName,
 				"err":    err,
@@ -422,7 +419,7 @@ func (s *storageLvm) createThinLV(lvname string, poolname string) (string, error
 		fmt.Sprintf("%s/%s", s.vgName, poolname)).CombinedOutput()
 
 	if err != nil {
-		s.log.Debug("could not create LV", log.Ctx{"lvname": lvname, "output": output})
+		s.log.Debug("Could not create LV", log.Ctx{"lvname": lvname, "output": output})
 		return "", fmt.Errorf("Could not create thin LV named %s", lvname)
 	}
 
@@ -433,7 +430,7 @@ func (s *storageLvm) removeLV(lvname string) error {
 	output, err := exec.Command(
 		"lvremove", "-f", fmt.Sprintf("%s/%s", s.vgName, lvname)).CombinedOutput()
 	if err != nil {
-		s.log.Debug("could not remove LV", log.Ctx{"lvname": lvname, "output": output})
+		s.log.Debug("Could not remove LV", log.Ctx{"lvname": lvname, "output": output})
 		return fmt.Errorf("Could not remove LV named %s", lvname)
 	}
 	return nil
@@ -446,8 +443,7 @@ func (s *storageLvm) createSnapshotLV(lvname string, origlvname string) (string,
 		"-n", lvname,
 		"-s", fmt.Sprintf("/dev/%s/%s", s.vgName, origlvname)).CombinedOutput()
 	if err != nil {
-		s.log.Debug("could not create LV snapshot", log.Ctx{"lvname": lvname, "origlvname": origlvname, "output": output})
-		shared.Debugf("could not create LV named '%s' as snapshot of '%s': '%s'", lvname, origlvname, output)
+		s.log.Debug("Could not create LV snapshot", log.Ctx{"lvname": lvname, "origlvname": origlvname, "output": output})
 		return "", fmt.Errorf("Could not create snapshot LV named %s", lvname)
 	}
 

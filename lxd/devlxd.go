@@ -23,17 +23,17 @@ func socketPath() string {
 	return shared.VarPath("devlxd")
 }
 
-type DevLxdResponse struct {
+type devLxdResponse struct {
 	content interface{}
 	code    int
 	ctype   string
 }
 
-func OkResponse(ct interface{}, ctype string) *DevLxdResponse {
-	return &DevLxdResponse{ct, http.StatusOK, ctype}
+func okResponse(ct interface{}, ctype string) *devLxdResponse {
+	return &devLxdResponse{ct, http.StatusOK, ctype}
 }
 
-type DevLxdHandler struct {
+type devLxdHandler struct {
 	path string
 
 	/*
@@ -42,44 +42,44 @@ type DevLxdHandler struct {
 	 * server side right now either, I went the simple route to avoid
 	 * needless noise.
 	 */
-	f func(c container, r *http.Request) *DevLxdResponse
+	f func(c container, r *http.Request) *devLxdResponse
 }
 
-var configGet = DevLxdHandler{"/1.0/config", func(c container, r *http.Request) *DevLxdResponse {
+var configGet = devLxdHandler{"/1.0/config", func(c container, r *http.Request) *devLxdResponse {
 	filtered := []string{}
-	for k, _ := range c.ConfigGet().Config {
+	for k, _ := range c.ConfigGet() {
 		if strings.HasPrefix(k, "user.") {
 			filtered = append(filtered, fmt.Sprintf("/1.0/config/%s", k))
 		}
 	}
-	return OkResponse(filtered, "json")
+	return okResponse(filtered, "json")
 }}
 
-var configKeyGet = DevLxdHandler{"/1.0/config/{key}", func(c container, r *http.Request) *DevLxdResponse {
+var configKeyGet = devLxdHandler{"/1.0/config/{key}", func(c container, r *http.Request) *devLxdResponse {
 	key := mux.Vars(r)["key"]
 	if !strings.HasPrefix(key, "user.") {
-		return &DevLxdResponse{"not authorized", http.StatusForbidden, "raw"}
+		return &devLxdResponse{"not authorized", http.StatusForbidden, "raw"}
 	}
 
-	value, ok := c.ConfigGet().Config[key]
+	value, ok := c.ConfigGet()[key]
 	if !ok {
-		return &DevLxdResponse{"not found", http.StatusNotFound, "raw"}
+		return &devLxdResponse{"not found", http.StatusNotFound, "raw"}
 	}
 
-	return OkResponse(value, "raw")
+	return okResponse(value, "raw")
 }}
 
-var metadataGet = DevLxdHandler{"/1.0/meta-data", func(c container, r *http.Request) *DevLxdResponse {
-	value := c.ConfigGet().Config["user.meta-data"]
-	return OkResponse(fmt.Sprintf("#cloud-config\ninstance-id: %s\nlocal-hostname: %s\n%s", c.NameGet(), c.NameGet(), value), "raw")
+var metadataGet = devLxdHandler{"/1.0/meta-data", func(c container, r *http.Request) *devLxdResponse {
+	value := c.ConfigGet()["user.meta-data"]
+	return okResponse(fmt.Sprintf("#cloud-config\ninstance-id: %s\nlocal-hostname: %s\n%s", c.NameGet(), c.NameGet(), value), "raw")
 }}
 
-var handlers = []DevLxdHandler{
-	DevLxdHandler{"/", func(c container, r *http.Request) *DevLxdResponse {
-		return OkResponse([]string{"/1.0"}, "json")
+var handlers = []devLxdHandler{
+	devLxdHandler{"/", func(c container, r *http.Request) *devLxdResponse {
+		return okResponse([]string{"/1.0"}, "json")
 	}},
-	DevLxdHandler{"/1.0", func(c container, r *http.Request) *DevLxdResponse {
-		return OkResponse(shared.Jmap{"api_compat": 0}, "json")
+	devLxdHandler{"/1.0", func(c container, r *http.Request) *devLxdResponse {
+		return okResponse(shared.Jmap{"api_compat": 0}, "json")
 	}},
 	configGet,
 	configKeyGet,
@@ -87,7 +87,7 @@ var handlers = []DevLxdHandler{
 	/* TODO: events */
 }
 
-func hoistReq(f func(container, *http.Request) *DevLxdResponse, d *Daemon) func(http.ResponseWriter, *http.Request) {
+func hoistReq(f func(container, *http.Request) *devLxdResponse, d *Daemon) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn := extractUnderlyingConn(w)
 		pid, ok := pidMapper.m[conn]
@@ -212,7 +212,7 @@ func (m *ConnPidMapper) ConnStateHandler(conn net.Conn, state http.ConnState) {
 	case http.StateNew:
 		pid, err := getPid(unixConn)
 		if err != nil {
-			shared.Debugf("error getting pid for conn %s", err)
+			shared.Debugf("Error getting pid for conn %s", err)
 		} else {
 			m.m[unixConn] = pid
 		}
@@ -233,7 +233,7 @@ func (m *ConnPidMapper) ConnStateHandler(conn net.Conn, state http.ConnState) {
 	case http.StateClosed:
 		delete(m.m, unixConn)
 	default:
-		shared.Debugf("unknown state for connection %s", state)
+		shared.Debugf("Unknown state for connection %s", state)
 	}
 }
 

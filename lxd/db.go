@@ -36,7 +36,7 @@ type Profile struct {
 // Profiles will contain a list of all Profiles.
 type Profiles []Profile
 
-const DB_CURRENT_VERSION int = 12
+const DB_CURRENT_VERSION int = 15
 
 // CURRENT_SCHEMA contains the current SQLite SQL Schema.
 const CURRENT_SCHEMA string = `
@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS containers (
     name VARCHAR(255) NOT NULL,
     architecture INTEGER NOT NULL,
     type INTEGER NOT NULL,
-    power_state INTEGER NOT NULL DEFAULT 0,
     ephemeral INTEGER NOT NULL DEFAULT 0,
     UNIQUE (name)
 );
@@ -98,6 +97,7 @@ CREATE TABLE IF NOT EXISTS containers_profiles (
 );
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    cached INTEGER NOT NULL DEFAULT 0,
     fingerprint VARCHAR(255) NOT NULL,
     filename VARCHAR(255) NOT NULL,
     size INTEGER NOT NULL,
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS images (
     creation_date DATETIME,
     expiry_date DATETIME,
     upload_date DATETIME NOT NULL,
+    last_use_date DATETIME,
     UNIQUE (fingerprint)
 );
 CREATE TABLE IF NOT EXISTS images_aliases (
@@ -182,8 +183,11 @@ func createDb(db *sql.DB) (err error) {
 	}
 
 	err = dbProfileCreateDefault(db)
+	if err != nil {
+		return err
+	}
 
-	return err
+	return dbProfileCreateMigratable(db)
 }
 
 func dbGetSchema(db *sql.DB) (v int) {
@@ -234,13 +238,6 @@ func initializeDbObject(d *Daemon, path string) (err error) {
 	return nil
 }
 
-// Initialize a database connection and set it on the daemon.
-func initDb(d *Daemon) (err error) {
-	path := shared.VarPath("lxd.db")
-	err = initializeDbObject(d, path)
-	return err
-}
-
 func isDbLockedError(err error) bool {
 	if err == nil {
 		return false
@@ -249,6 +246,16 @@ func isDbLockedError(err error) bool {
 		return true
 	}
 	if err.Error() == "database is locked" {
+		return true
+	}
+	return false
+}
+
+func isNoMatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err.Error() == "sql: no rows in result set" {
 		return true
 	}
 	return false
@@ -291,6 +298,9 @@ func dbQueryRowScan(db *sql.DB, q string, args []interface{}, outargs []interfac
 		err := db.QueryRow(q, args...).Scan(outargs...)
 		if err == nil {
 			return nil
+		}
+		if isNoMatchError(err) {
+			return err
 		}
 		if !isDbLockedError(err) {
 			shared.Log.Debug("DbQuery: query error", log.Ctx{"query": q, "args": args, "err": err})

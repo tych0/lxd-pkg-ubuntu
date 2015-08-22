@@ -10,6 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/lxc/lxd/lxd/migration"
 	"github.com/lxc/lxd/shared"
+
+	log "gopkg.in/inconshreveable/log15.v2"
 )
 
 func createFromImage(d *Daemon, req *containerPostReq) Response {
@@ -37,13 +39,13 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 	}
 
 	if req.Source.Server != "" {
-		err := ensureLocalImage(d, req.Source.Server, hash, req.Source.Secret)
+		err := d.ImageDownload(req.Source.Server, hash, req.Source.Secret, true)
 		if err != nil {
 			return InternalError(err)
 		}
 	}
 
-	imgInfo, err := dbImageGet(d.db, hash, false)
+	imgInfo, err := dbImageGet(d.db, hash, false, false)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -103,7 +105,7 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 		}
 
 		var c container
-		if _, err := dbImageGet(d.db, req.Source.BaseImage, false); err == nil {
+		if _, err := dbImageGet(d.db, req.Source.BaseImage, false, true); err == nil {
 			c, err = containerLXDCreateFromImage(
 				d, req.Name, createArgs, req.Source.BaseImage)
 
@@ -179,7 +181,6 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 		return BadRequest(fmt.Errorf("must specify a source container"))
 	}
 
-	// Make sure the source exists.
 	source, err := containerLXDLoad(d, req.Source.Source)
 	if err != nil {
 		return SmartError(err)
@@ -188,19 +189,20 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 	sourceConfig := source.ConfigGet()
 
 	if req.Config == nil {
-		config := make(map[string]string)
-		for key, value := range sourceConfig.Config {
-			if key[0:8] == "volatile" {
-				shared.Debugf("skipping: %s\n", key)
-				continue
-			}
-			req.Config[key] = value
+		req.Config = make(map[string]string)
+	}
+
+	for key, value := range sourceConfig {
+		if key[0:8] == "volatile" && key[9:] != "base_image" {
+			shared.Log.Debug("Skipping volatile key from copy source",
+				log.Ctx{"key": key})
+			continue
 		}
-		req.Config = config
+		req.Config[key] = value
 	}
 
 	if req.Profiles == nil {
-		req.Profiles = sourceConfig.Profiles
+		req.Profiles = source.ProfilesGet()
 	}
 
 	args := containerLXDArgs{
@@ -227,7 +229,7 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 }
 
 func containersPost(d *Daemon, r *http.Request) Response {
-	shared.Debugf("responding to create")
+	shared.Debugf("Responding to container create")
 
 	if d.IdmapSet == nil {
 		return BadRequest(fmt.Errorf("shared's user has no subuids"))
@@ -240,7 +242,7 @@ func containersPost(d *Daemon, r *http.Request) Response {
 
 	if req.Name == "" {
 		req.Name = strings.ToLower(petname.Generate(2, "-"))
-		shared.Debugf("no name provided, creating %s", req.Name)
+		shared.Debugf("No name provided, creating %s", req.Name)
 	}
 
 	if strings.Contains(req.Name, shared.SnapshotDelimiter) {

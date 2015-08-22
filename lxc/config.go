@@ -72,6 +72,8 @@ func (c *configCmd) usage() string {
 			"\tlxc config device add [remote:]container1 <device-name> disk source=/share/c1 path=opt\n" +
 			"To set an lxc config value:\n" +
 			"\tlxc config set [remote:]<container> raw.lxc 'lxc.aa_allow_incomplete = 1'\n" +
+			"To listen on IPv4 and IPv6 port 8443 (you can omit the 8443 its the default):\n" +
+			"\tlxc config set core.https_address [::]:8443\n" +
 			"To set the server trust password:\n" +
 			"\tlxc config set core.trust_password blah\n")
 }
@@ -110,7 +112,7 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		// 2 args means we're unsetting a server key
 		if len(args) == 2 {
 			key := args[1]
-			c, err := lxd.NewClient(config, "")
+			c, err := lxd.NewClient(config, config.DefaultRemote)
 			if err != nil {
 				return err
 			}
@@ -130,7 +132,7 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		// 3 args means we're setting a server key
 		if len(args) == 3 {
 			key := args[1]
-			c, err := lxd.NewClient(config, "")
+			c, err := lxd.NewClient(config, config.DefaultRemote)
 			if err != nil {
 				return err
 			}
@@ -234,7 +236,7 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		}
 
 	case "show":
-		remote := ""
+		remote := config.DefaultRemote
 		container := ""
 		if len(args) > 1 {
 			remote, container = config.ParseRemoteAndContainer(args[1])

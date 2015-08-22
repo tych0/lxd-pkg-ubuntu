@@ -13,8 +13,65 @@ import (
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
-func dbUpdateFromV11(db *sql.DB) error {
-	cNames, err := dbContainersList(db, cTypeSnapshot)
+func dbUpdateFromV14(db *sql.DB) error {
+	stmt := `
+PRAGMA foreign_keys=OFF; -- So that integrity doesn't get in the way for now
+
+DELETE FROM containers_config WHERE key="volatile.last_state.power";
+
+INSERT INTO containers_config (container_id, key, value)
+    SELECT id, "volatile.last_state.power", "RUNNING"
+    FROM containers WHERE power_state=1;
+
+INSERT INTO containers_config (container_id, key, value)
+    SELECT id, "volatile.last_state.power", "STOPPED"
+    FROM containers WHERE power_state != 1;
+
+CREATE TABLE tmp (
+    id INTEGER primary key AUTOINCREMENT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    architecture INTEGER NOT NULL,
+    type INTEGER NOT NULL,
+    ephemeral INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (name)
+);
+
+INSERT INTO tmp SELECT id, name, architecture, type, ephemeral FROM containers;
+
+DROP TABLE containers;
+ALTER TABLE tmp RENAME TO containers;
+
+PRAGMA foreign_keys=ON; -- Make sure we turn integrity checks back on.
+INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
+	_, err := db.Exec(stmt, 15)
+	return err
+}
+
+func dbUpdateFromV13(db *sql.DB) error {
+	stmt := `
+UPDATE containers_config SET key='volatile.base_image' WHERE key = 'volatile.baseImage';
+INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
+	_, err := db.Exec(stmt, 14)
+	return err
+}
+
+func dbUpdateFromV12(db *sql.DB) error {
+	stmt := `
+ALTER TABLE images ADD COLUMN cached INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN last_use_date DATETIME;
+INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
+	_, err := db.Exec(stmt, 13)
+	return err
+}
+
+func dbUpdateFromV11(d *Daemon) error {
+	if d.IsMock {
+		// No need to move snapshots no mock runs,
+		// dbUpdateFromV12 will then set the db version to 13
+		return nil
+	}
+
+	cNames, err := dbContainersList(d.db, cTypeSnapshot)
 	if err != nil {
 		return err
 	}
@@ -80,19 +137,25 @@ func dbUpdateFromV11(db *sql.DB) error {
 
 	stmt := `
 INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
-	_, err = db.Exec(stmt, 12)
-	return err
+	_, err = d.db.Exec(stmt, 12)
 
+	return err
 }
 
 func dbUpdateFromV10(d *Daemon) error {
+	if d.IsMock {
+		// No need to move lxc to containers in mock runs,
+		// dbUpdateFromV12 will then set the db version to 13
+		return nil
+	}
+
 	if shared.PathExists(shared.VarPath("lxc")) {
 		err := os.Rename(shared.VarPath("lxc"), shared.VarPath("containers"))
 		if err != nil {
 			return err
 		}
 
-		shared.Debugf("Restarting all the containers following directory rename.")
+		shared.Debugf("Restarting all the containers following directory rename")
 		containersShutdown(d)
 		containersRestart(d)
 	}
@@ -553,7 +616,25 @@ func dbUpdate(d *Daemon, prevVersion int) error {
 		}
 	}
 	if prevVersion < 12 {
-		err = dbUpdateFromV11(db)
+		err = dbUpdateFromV11(d)
+		if err != nil {
+			return err
+		}
+	}
+	if prevVersion < 13 {
+		err = dbUpdateFromV12(db)
+		if err != nil {
+			return err
+		}
+	}
+	if prevVersion < 14 {
+		err = dbUpdateFromV13(db)
+		if err != nil {
+			return err
+		}
+	}
+	if prevVersion < 15 {
+		err = dbUpdateFromV14(db)
 		if err != nil {
 			return err
 		}

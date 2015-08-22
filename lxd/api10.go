@@ -79,7 +79,13 @@ func api10Get(d *Daemon, r *http.Request) Response {
 			kernelArchitecture += string(byte(c))
 		}
 
+		addresses, err := d.ListenAddresses()
+		if err != nil {
+			return InternalError(err)
+		}
+
 		env := shared.Jmap{
+			"addresses":           addresses,
 			"architectures":       d.architectures,
 			"backing_fs":          d.BackingFs,
 			"driver":              "lxc",
@@ -105,6 +111,12 @@ func api10Get(d *Daemon, r *http.Request) Response {
 				config[key] = value
 			}
 		}
+
+		expiry, err := dbImageExpiryGet(d.db)
+		if err != nil || expiry == "" {
+			expiry = "10"
+		}
+		config["images.remote_cache_expiry"] = expiry
 
 		body["config"] = config
 	} else {
@@ -167,6 +179,9 @@ func api10Put(d *Daemon, r *http.Request) Response {
 			err := d.ConfigValueSet(key, value.(string))
 			if err != nil {
 				return InternalError(err)
+			}
+			if key == "images.remote_cache_expiry" {
+				d.pruneChan <- true
 			}
 		}
 	}

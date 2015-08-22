@@ -18,7 +18,7 @@ import (
 func main() {
 	if err := run(); err != nil {
 		// The action we take depends on the error we get.
-		msg := fmt.Sprintf(gettext.Gettext("error %v\n"), err)
+		msg := fmt.Sprintf(gettext.Gettext("error: %v\n"), err)
 		switch t := err.(type) {
 		case *url.Error:
 			switch u := t.Err.(type) {
@@ -32,7 +32,7 @@ func main() {
 						case syscall.ECONNREFUSED:
 							msg = gettext.Gettext("Connection refused; is LXD running?\n")
 						case syscall.EACCES:
-							msg = gettext.Gettext("Permisson denied, are you in the lxd group?")
+							msg = gettext.Gettext("Permisson denied, are you in the lxd group?\n")
 						default:
 							msg = fmt.Sprintf("%d %s\n", uintptr(errno), errno.Error())
 						}

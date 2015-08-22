@@ -153,6 +153,7 @@ fi
 . ./database_update.sh
 . ./devlxd.sh
 . ./lvm.sh
+. ./image.sh
 
 if [ -n "$LXD_DEBUG" ]; then
     debug=--debug
@@ -191,6 +192,12 @@ spawn_lxd() {
   if [ -n "$LXD_DEBUG" ]; then
       set -x
   fi
+}
+
+ensure_has_localhost_remote() {
+    if ! lxc remote list | grep -q "localhost"; then
+        (echo y; sleep 3) | lxc remote add localhost $BASEURL $debug --password foo
+    fi
 }
 
 ensure_import_testimage() {
@@ -243,6 +250,10 @@ test_remote_admin
 echo "==> TEST: basic usage"
 curtest=test_basic_usage
 test_basic_usage
+
+echo "==> TEST: images (and cached image expiry)"
+curtest=test_image_expiry
+test_image_expiry
 
 if [ -n "$LXD_CONCURRENT" ]; then
     echo "==> TEST: concurrent exec"

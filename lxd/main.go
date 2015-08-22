@@ -124,7 +124,7 @@ func run() error {
 		}()
 	}
 
-	d, err := StartDaemon()
+	d, err := startDaemon()
 
 	if err != nil {
 		if d != nil && d.db != nil {
@@ -145,9 +145,9 @@ func run() error {
 		shared.Log.Info(
 			fmt.Sprintf("Received '%s signal', shutting down containers.", sig))
 
-		ret = d.Stop()
-
 		containersShutdown(d)
+
+		ret = d.Stop()
 		wg.Done()
 	}()
 

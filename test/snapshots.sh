@@ -1,4 +1,7 @@
 test_snapshots() {
+  ensure_import_testimage
+  ensure_has_localhost_remote
+
   lxc init testimage foo
 
   lxc snapshot foo
@@ -35,6 +38,9 @@ test_snap_restore() {
     echo "SKIPPING"
     return
   fi
+
+  ensure_import_testimage
+  ensure_has_localhost_remote
 
   lxc launch testimage bar
 

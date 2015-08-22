@@ -12,23 +12,19 @@ import (
 )
 
 type storageDir struct {
-	d     *Daemon
-	sType storageType
+	d *Daemon
 
 	storageShared
 }
 
 func (s *storageDir) Init(config map[string]interface{}) (storage, error) {
+	s.sType = storageTypeDir
 	s.sTypeName = storageTypeToString(s.sType)
 	if err := s.initShared(); err != nil {
 		return s, err
 	}
 
 	return s, nil
-}
-
-func (s *storageDir) GetStorageType() storageType {
-	return s.sType
 }
 
 func (s *storageDir) ContainerCreate(container container) error {
@@ -83,19 +79,6 @@ func (s *storageDir) ContainerDelete(container container) error {
 	if err != nil {
 		s.log.Error("ContainerDelete: failed", log.Ctx{"cPath": cPath, "err": err})
 		return fmt.Errorf("Error cleaning up %s: %s", cPath, err)
-	}
-
-	// If its name contains a "/" also remove the parent,
-	// this should only happen with snapshot containers
-	if strings.Contains(container.NameGet(), "/") {
-		oldPathParent := filepath.Dir(container.PathGet(""))
-		if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
-			os.Remove(oldPathParent)
-		} else {
-			shared.Log.Debug(
-				"Cannot remove the parent of this container its not empty",
-				log.Ctx{"container": container.NameGet(), "parent": oldPathParent})
-		}
 	}
 
 	return nil
@@ -196,8 +179,17 @@ func (s *storageDir) ContainerSnapshotCreate(
 }
 func (s *storageDir) ContainerSnapshotDelete(
 	snapshotContainer container) error {
+	err := s.ContainerDelete(snapshotContainer)
+	if err != nil {
+		return fmt.Errorf("Error deleting snapshot %s: %s", snapshotContainer.NameGet(), err)
+	}
 
-	return s.ContainerDelete(snapshotContainer)
+	oldPathParent := filepath.Dir(snapshotContainer.PathGet(""))
+	if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
+		os.Remove(oldPathParent)
+	}
+
+	return nil
 }
 
 func (s *storageDir) ContainerSnapshotRename(
