@@ -13,13 +13,13 @@ import (
 )
 
 type storageBtrfs struct {
-	d     *Daemon
-	sType storageType
+	d *Daemon
 
 	storageShared
 }
 
 func (s *storageBtrfs) Init(config map[string]interface{}) (storage, error) {
+	s.sType = storageTypeBtrfs
 	s.sTypeName = storageTypeToString(s.sType)
 	if err := s.initShared(); err != nil {
 		return s, err
@@ -33,18 +33,22 @@ func (s *storageBtrfs) Init(config map[string]interface{}) (storage, error) {
 	return s, nil
 }
 
-func (s *storageBtrfs) GetStorageType() storageType {
-	return s.sType
-}
-
 func (s *storageBtrfs) ContainerCreate(container container) error {
-	err := s.subvolCreate(container.PathGet(""))
+	cPath := container.PathGet("")
+
+	// MkdirAll the pardir of the BTRFS Subvolume.
+	if err := os.MkdirAll(filepath.Dir(cPath), 0755); err != nil {
+		return err
+	}
+
+	// Create the BTRFS Subvolume
+	err := s.subvolCreate(cPath)
 	if err != nil {
 		return err
 	}
 
 	if container.IsPrivileged() {
-		if err := os.Chmod(container.PathGet(""), 0700); err != nil {
+		if err := os.Chmod(cPath, 0700); err != nil {
 			return err
 		}
 	}
@@ -103,23 +107,6 @@ func (s *storageBtrfs) ContainerDelete(container container) error {
 		return fmt.Errorf("Error cleaning up %s: %s", cPath, err)
 	}
 
-	// If its name contains a "/" also remove the parent,
-	// this should only happen with snapshot containers
-	if strings.Contains(container.NameGet(), "/") {
-		oldPathParent := filepath.Dir(container.PathGet(""))
-		shared.Log.Debug(
-			"Trying to remove the parent path",
-			log.Ctx{"container": container.NameGet(), "parent": oldPathParent})
-
-		if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
-			os.Remove(oldPathParent)
-		} else {
-			shared.Log.Debug(
-				"Cannot remove the parent of this container its not empty",
-				log.Ctx{"container": container.NameGet(), "parent": oldPathParent})
-		}
-	}
-
 	return nil
 }
 
@@ -134,12 +121,17 @@ func (s *storageBtrfs) ContainerCopy(container container, sourceContainer contai
 			return err
 		}
 	} else {
+		// Create the BTRFS Container.
+		if err := s.ContainerCreate(container); err != nil {
+			return err
+		}
+
 		/*
 		 * Copy by using rsync
 		 */
 		output, err := storageRsyncCopy(
-			sourceContainer.RootfsPathGet(),
-			container.RootfsPathGet())
+			sourceContainer.PathGet(""),
+			container.PathGet(""))
 		if err != nil {
 			s.ContainerDelete(container)
 
@@ -271,7 +263,16 @@ func (s *storageBtrfs) ContainerSnapshotCreate(
 func (s *storageBtrfs) ContainerSnapshotDelete(
 	snapshotContainer container) error {
 
-	return s.ContainerDelete(snapshotContainer)
+	err := s.ContainerDelete(snapshotContainer)
+	if err != nil {
+		return fmt.Errorf("Error deleting snapshot %s: %s", snapshotContainer.NameGet(), err)
+	}
+
+	oldPathParent := filepath.Dir(snapshotContainer.PathGet(""))
+	if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
+		os.Remove(oldPathParent)
+	}
+	return nil
 }
 
 // ContainerSnapshotRename renames a snapshot of a container.

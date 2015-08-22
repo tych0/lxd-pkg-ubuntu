@@ -65,6 +65,7 @@ func storageRsyncCopy(source string, dest string) (string, error) {
 		"-HAX",
 		"--devices",
 		"--delete",
+		"--checksum",
 		rsyncVerbosity,
 		shared.AddSlash(source),
 		dest).CombinedOutput()
@@ -84,7 +85,7 @@ func storageUnprivUserAclSet(c container, dpath string) error {
 	uid, _ := idmapset.ShiftIntoNs(0, 0)
 	switch uid {
 	case -1:
-		shared.Debugf("storageUnprivUserAclSet: no root id mapping")
+		shared.Debugf("No root id mapping")
 		return nil
 	case 0:
 		return nil
@@ -92,7 +93,7 @@ func storageUnprivUserAclSet(c container, dpath string) error {
 	acl := fmt.Sprintf("%d:rx", uid)
 	output, err := exec.Command("setfacl", "-m", acl, dpath).CombinedOutput()
 	if err != nil {
-		shared.Debugf("storageUnprivUserAclSet: setfacl failed:\n%s", output)
+		shared.Debugf("Setfacl failed:\n%s", output)
 	}
 	return err
 }
@@ -104,6 +105,7 @@ const (
 	storageTypeBtrfs storageType = iota
 	storageTypeLvm
 	storageTypeDir
+	storageTypeMock
 )
 
 func storageTypeToString(sType storageType) string {
@@ -112,6 +114,8 @@ func storageTypeToString(sType storageType) string {
 		return "btrfs"
 	case storageTypeLvm:
 		return "lvm"
+	case storageTypeMock:
+		return "mock"
 	}
 
 	return "dir"
@@ -151,6 +155,10 @@ func newStorage(d *Daemon, sType storageType) (storage, error) {
 }
 
 func newStorageWithConfig(d *Daemon, sType storageType, config map[string]interface{}) (storage, error) {
+	if d.IsMock {
+		return d.Storage, nil
+	}
+
 	var s storage
 
 	switch sType {
@@ -159,19 +167,19 @@ func newStorageWithConfig(d *Daemon, sType storageType, config map[string]interf
 			return d.Storage, nil
 		}
 
-		s = &storageLogWrapper{w: &storageBtrfs{d: d, sType: sType}}
+		s = &storageLogWrapper{w: &storageBtrfs{d: d}}
 	case storageTypeLvm:
 		if d.Storage != nil && d.Storage.GetStorageType() == storageTypeLvm {
 			return d.Storage, nil
 		}
 
-		s = &storageLogWrapper{w: &storageLvm{d: d, sType: sType}}
+		s = &storageLogWrapper{w: &storageLvm{d: d}}
 	default:
 		if d.Storage != nil && d.Storage.GetStorageType() == storageTypeDir {
 			return d.Storage, nil
 		}
 
-		s = &storageLogWrapper{w: &storageDir{d: d, sType: sType}}
+		s = &storageLogWrapper{w: &storageDir{d: d}}
 	}
 
 	return s.Init(config)
@@ -207,6 +215,7 @@ func storageForImage(d *Daemon, imgInfo *shared.ImageBaseInfo) (storage, error) 
 }
 
 type storageShared struct {
+	sType     storageType
 	sTypeName string
 
 	log log.Logger
@@ -219,6 +228,10 @@ func (ss *storageShared) initShared() error {
 	return nil
 }
 
+func (ss *storageShared) GetStorageType() storageType {
+	return ss.sType
+}
+
 func (ss *storageShared) GetStorageTypeName() string {
 	return ss.sTypeName
 }
@@ -227,7 +240,7 @@ func (ss *storageShared) shiftRootfs(c container) error {
 	dpath := c.PathGet("")
 	rpath := c.RootfsPathGet()
 
-	shared.Log.Debug("shiftRootfs",
+	shared.Log.Debug("Shifting root filesystem",
 		log.Ctx{"container": c.NameGet(), "rootfs": rpath})
 
 	idmapset, err := c.IdmapSetGet()
@@ -257,7 +270,7 @@ func (ss *storageShared) setUnprivUserAcl(c container, destPath string) error {
 		err := storageUnprivUserAclSet(c, destPath)
 		if err != nil {
 			ss.log.Error(
-				"adding acl for container root: falling back to chmod",
+				"Adding acl for container root: falling back to chmod",
 				log.Ctx{"destPath": destPath})
 
 			output, err := exec.Command(
@@ -314,7 +327,7 @@ func (lw *storageLogWrapper) ContainerCreateFromImage(
 	container container, imageFingerprint string) error {
 
 	lw.log.Debug(
-		"ContainerCreate",
+		"ContainerCreateFromImage",
 		log.Ctx{
 			"imageFingerprint": imageFingerprint,
 			"name":             container.NameGet(),

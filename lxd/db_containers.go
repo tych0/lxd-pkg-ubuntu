@@ -83,18 +83,6 @@ func dbContainerCreate(db *sql.DB, name string, args containerLXDArgs) (int, err
 		return 0, DbErrAlreadyDefined
 	}
 
-	if args.Profiles == nil {
-		args.Profiles = []string{"default"}
-	}
-
-	if args.BaseImage != "" {
-		if args.Config == nil {
-			args.Config = map[string]string{}
-		}
-
-		args.Config["volatile.baseImage"] = args.BaseImage
-	}
-
 	tx, err := dbBegin(db)
 	if err != nil {
 		return 0, err
@@ -338,6 +326,12 @@ func dbContainerGetSnapshots(db *sql.DB, name string) ([]string, error) {
 // ValidContainerConfigKey returns if the given config key is a known/valid key.
 func ValidContainerConfigKey(k string) bool {
 	switch k {
+	case "boot.autostart":
+		return true
+	case "boot.autostart.delay":
+		return true
+	case "boot.autostart.priority":
+		return true
 	case "limits.cpus":
 		return true
 	case "limits.memory":
@@ -348,11 +342,15 @@ func ValidContainerConfigKey(k string) bool {
 		return true
 	case "raw.lxc":
 		return true
-	case "volatile.baseImage":
+	case "volatile.base_image":
+		return true
+	case "volatile.last_state.idmap":
+		return true
+	case "volatile.last_state.power":
 		return true
 	}
 
-	if _, err := ExtractInterfaceFromConfigName(k); err == nil {
+	if _, err := extractInterfaceFromConfigName(k); err == nil {
 		return true
 	}
 

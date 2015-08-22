@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -170,7 +172,7 @@ func containersWatch(d *Daemon) error {
 			return err
 		}
 
-		if container.IsEmpheral() && container.IsRunning() {
+		if container.IsEphemeral() && container.IsRunning() {
 			containerWatchEphemeral(d, container)
 		}
 	}
@@ -185,35 +187,50 @@ func containersWatch(d *Daemon) error {
 }
 
 func containersRestart(d *Daemon) error {
-	q := fmt.Sprintf("SELECT name FROM containers WHERE type=? AND power_state=1")
-	inargs := []interface{}{cTypeRegular}
-	var name string
-	outfmt := []interface{}{name}
+	containers, err := doContainersGet(d, true)
 
-	result, err := dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
 		return err
 	}
 
-	_, err = dbExec(d.db, "UPDATE containers SET power_state=0")
-	if err != nil {
-		return err
-	}
+	containerInfo := containers.(shared.ContainerInfoList)
+	sort.Sort(containerInfo)
 
-	for _, r := range result {
-		container, err := containerLXDLoad(d, string(r[0].(string)))
-		if err != nil {
-			return err
+	for _, container := range containerInfo {
+		lastState := container.State.Config["volatile.last_state.power"]
+
+		autoStart := container.State.ExpandedConfig["boot.autostart"]
+		autoStartDelay := container.State.ExpandedConfig["boot.autostart.delay"]
+
+		if lastState == "RUNNING" || autoStart == "true" {
+			container, err := containerLXDLoad(d, container.State.Name)
+			if err != nil {
+				return err
+			}
+
+			if container.IsRunning() {
+				continue
+			}
+
+			container.Start()
+
+			autoStartDelayInt, err := strconv.Atoi(autoStartDelay)
+			if err == nil {
+				time.Sleep(time.Duration(autoStartDelayInt) * time.Second)
+			}
 		}
+	}
 
-		container.Start()
+	_, err = dbExec(d.db, "DELETE FROM containers_config WHERE key='volatile.last_state.power'")
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
 func containersShutdown(d *Daemon) error {
-	results, err := d.ListRegularContainers()
+	results, err := dbContainersList(d.db, cTypeRegular)
 	if err != nil {
 		return err
 	}
@@ -221,24 +238,22 @@ func containersShutdown(d *Daemon) error {
 	var wg sync.WaitGroup
 
 	for _, r := range results {
-		container, err := containerLXDLoad(d, r)
+		c, err := containerLXDLoad(d, r)
 		if err != nil {
 			return err
 		}
 
-		if container.IsRunning() {
-			_, err = dbExec(
-				d.db,
-				"UPDATE containers SET power_state=1 WHERE name=?",
-				container.NameGet())
-			if err != nil {
-				return err
-			}
+		err = c.ConfigKeySet("volatile.last_state.power", c.StateGet())
 
+		if err != nil {
+			return err
+		}
+
+		if c.IsRunning() {
 			wg.Add(1)
 			go func() {
-				container.Shutdown(time.Second * 30)
-				container.Stop()
+				c.Shutdown(time.Second * 30)
+				c.Stop()
 				wg.Done()
 			}()
 		}
@@ -249,6 +264,9 @@ func containersShutdown(d *Daemon) error {
 }
 
 func containerDeleteSnapshots(d *Daemon, cname string) error {
+	shared.Log.Debug("containerDeleteSnapshots",
+		log.Ctx{"container": cname})
+
 	results, err := dbContainerGetSnapshots(d.db, cname)
 	if err != nil {
 		return err
@@ -266,8 +284,8 @@ func containerDeleteSnapshots(d *Daemon, cname string) error {
 
 		if err := sc.Delete(); err != nil {
 			shared.Log.Error(
-				"containerDeleteSnapshots: Failed to load delete a snapshotcontainer",
-				log.Ctx{"container": cname, "snapshot": sname})
+				"containerDeleteSnapshots: Failed to delete a snapshotcontainer",
+				log.Ctx{"container": cname, "snapshot": sname, "err": err})
 		}
 	}
 

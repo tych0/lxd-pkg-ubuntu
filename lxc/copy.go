@@ -60,11 +60,7 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 			return err
 		}
 
-		baseImage = status.Config["volatile.baseImage"]
-
-		if status.State() == shared.RUNNING && sourceName != destName {
-			return fmt.Errorf(gettext.Gettext("Changing the name of a running container during copy isn't supported."))
-		}
+		baseImage = status.Config["volatile.base_image"]
 
 		if !keepVolatile {
 			for k := range status.Config {
@@ -88,10 +84,6 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 
 		return source.WaitForSuccess(cp.Operation)
 	} else {
-		if sourceRemote == "" || destRemote == "" {
-			return fmt.Errorf(gettext.Gettext("non-http remotes are not supported for migration right now"))
-		}
-
 		dest, err := lxd.NewClient(config, destRemote)
 		if err != nil {
 			return err
@@ -117,25 +109,28 @@ func copyContainer(config *lxd.Config, sourceResource string, destResource strin
 			return err
 		}
 
-		sourceWSUrl := source.BaseWSURL + path.Join(sourceWSResponse.Operation, "websocket")
-		migration, err := dest.MigrateFrom(sourceName, sourceWSUrl, secrets, status.Config, status.Profiles, baseImage)
+		addresses, err := source.Addresses()
 		if err != nil {
 			return err
 		}
 
-		if err := dest.WaitForSuccess(migration.Operation); err != nil {
-			return err
-		}
+		for _, addr := range addresses {
+			sourceWSUrl := "wss://" + addr + path.Join(sourceWSResponse.Operation, "websocket")
 
-		if sourceName != destName {
-			rename, err := dest.Rename(sourceName, destName)
+			var migration *lxd.Response
+			migration, err = dest.MigrateFrom(destName, sourceWSUrl, secrets, status.Config, status.Profiles, baseImage)
 			if err != nil {
-				return err
+				continue
 			}
-			return dest.WaitForSuccess(rename.Operation)
+
+			if err = dest.WaitForSuccess(migration.Operation); err != nil {
+				continue
+			}
+
+			return nil
 		}
 
-		return nil
+		return err
 	}
 }
 

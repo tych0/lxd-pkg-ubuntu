@@ -72,7 +72,7 @@ func untar(tarball string, path string) error {
 
 	output, err := exec.Command("tar", args...).CombinedOutput()
 	if err != nil {
-		shared.Debugf("unpacking failed\n")
+		shared.Debugf("Unpacking failed\n")
 		shared.Debugf(string(output))
 		return err
 	}
@@ -187,7 +187,6 @@ func imgPostContInfo(d *Daemon, r *http.Request, req imagePostReq,
 
 	_, err = exec.Command("gzip", tarfile.Name()).CombinedOutput()
 	if err != nil {
-		shared.Debugf("image compression\n")
 		return info, err
 	}
 	gztarpath := fmt.Sprintf("%s.gz", tarfile.Name())
@@ -240,12 +239,14 @@ func imgPostRemoteInfo(d *Daemon, req imagePostReq) Response {
 		return BadRequest(fmt.Errorf("must specify one of alias or fingerprint for init from image"))
 	}
 
-	err = ensureLocalImage(d, req.Source["server"], hash, req.Source["secret"])
+	err = d.ImageDownload(
+		req.Source["server"], hash, req.Source["secret"], false)
+
 	if err != nil {
 		return InternalError(err)
 	}
 
-	info, err := dbImageGet(d.db, hash, false)
+	info, err := dbImageGet(d.db, hash, false, false)
 	if err != nil {
 		return InternalError(err)
 	}
@@ -643,6 +644,37 @@ func getImageMetadata(fname string) (*imageMetadata, error) {
 	return metadata, nil
 }
 
+func doImagesGet(d *Daemon, recursion bool, public bool) (interface{}, error) {
+	results, err := dbImagesGet(d.db, public)
+	if err != nil {
+		return []string{}, err
+	}
+
+	resultString := make([]string, len(results))
+	resultMap := make([]shared.ImageInfo, len(results))
+	i := 0
+	for _, name := range results {
+		if !recursion {
+			url := fmt.Sprintf("/%s/images/%s", shared.APIVersion, name)
+			resultString[i] = url
+		} else {
+			image, response := doImageGet(d, name, public)
+			if response != nil {
+				continue
+			}
+			resultMap[i] = image
+		}
+
+		i++
+	}
+
+	if !recursion {
+		return resultString, nil
+	}
+
+	return resultMap, nil
+}
+
 func imagesGet(d *Daemon, r *http.Request) Response {
 	public := !d.isTrustedClient(r)
 
@@ -653,62 +685,23 @@ func imagesGet(d *Daemon, r *http.Request) Response {
 	return SyncResponse(true, result)
 }
 
-func doImagesGet(d *Daemon, recursion bool, public bool) (interface{}, error) {
-	resultString := []string{}
-	resultMap := []shared.ImageInfo{}
-
-	q := "SELECT fingerprint FROM images"
-	var name string
-	if public == true {
-		q = "SELECT fingerprint FROM images WHERE public=1"
-	}
-	inargs := []interface{}{}
-	outfmt := []interface{}{name}
-	results, err := dbQueryScan(d.db, q, inargs, outfmt)
-	if err != nil {
-		return []string{}, err
-	}
-
-	for _, r := range results {
-		name = r[0].(string)
-		if !recursion {
-			url := fmt.Sprintf("/%s/images/%s", shared.APIVersion, name)
-			resultString = append(resultString, url)
-		} else {
-			image, response := doImageGet(d, name, public)
-			if response != nil {
-				continue
-			}
-			resultMap = append(resultMap, image)
-		}
-	}
-
-	if !recursion {
-		return resultString, nil
-	}
-
-	return resultMap, nil
-}
-
 var imagesCmd = Command{name: "images", post: imagesPost, untrustedGet: true, get: imagesGet}
 
-func imageDelete(d *Daemon, r *http.Request) Response {
-	fingerprint := mux.Vars(r)["fingerprint"]
-
-	imgInfo, err := dbImageGet(d.db, fingerprint, false)
+func doDeleteImage(d *Daemon, fingerprint string) error {
+	imgInfo, err := dbImageGet(d.db, fingerprint, false, false)
 	if err != nil {
-		return SmartError(err)
+		return err
 	}
 
 	if err = dbImageDelete(d.db, imgInfo.Id); err != nil {
-		return SmartError(err)
+		return err
 	}
 
 	// get storage before deleting images/$fp because we need to
 	// look at the path
 	s, err := storageForImage(d, imgInfo)
 	if err != nil {
-		return InternalError(err)
+		return err
 	}
 
 	fname := shared.VarPath("images", imgInfo.Fingerprint)
@@ -718,14 +711,24 @@ func imageDelete(d *Daemon, r *http.Request) Response {
 	}
 
 	if err = s.ImageDelete(imgInfo.Fingerprint); err != nil {
-		return InternalError(err)
+		return err
+	}
+
+	return nil
+}
+
+func imageDelete(d *Daemon, r *http.Request) Response {
+	fingerprint := mux.Vars(r)["fingerprint"]
+
+	if err := doDeleteImage(d, fingerprint); err != nil {
+		return SmartError(err)
 	}
 
 	return EmptySyncResponse
 }
 
 func doImageGet(d *Daemon, fingerprint string, public bool) (shared.ImageInfo, Response) {
-	imgInfo, err := dbImageGet(d.db, fingerprint, public)
+	imgInfo, err := dbImageGet(d.db, fingerprint, public, false)
 	if err != nil {
 		return shared.ImageInfo{}, SmartError(err)
 	}
@@ -855,7 +858,7 @@ func imagePut(d *Daemon, r *http.Request) Response {
 		return BadRequest(err)
 	}
 
-	imgInfo, err := dbImageGet(d.db, fingerprint, false)
+	imgInfo, err := dbImageGet(d.db, fingerprint, false, false)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -915,7 +918,7 @@ func aliasesPost(d *Daemon, r *http.Request) Response {
 		return Conflict
 	}
 
-	imgInfo, err := dbImageGet(d.db, req.Target, false)
+	imgInfo, err := dbImageGet(d.db, req.Target, false, false)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -1012,7 +1015,7 @@ func imageExport(d *Daemon, r *http.Request) Response {
 		public = false
 	}
 
-	imgInfo, err := dbImageGet(d.db, fingerprint, public)
+	imgInfo, err := dbImageGet(d.db, fingerprint, public, false)
 	if err != nil {
 		return SmartError(err)
 	}
@@ -1052,7 +1055,7 @@ func imageExport(d *Daemon, r *http.Request) Response {
 
 func imageSecret(d *Daemon, r *http.Request) Response {
 	fingerprint := mux.Vars(r)["fingerprint"]
-	_, err := dbImageGet(d.db, fingerprint, false)
+	_, err := dbImageGet(d.db, fingerprint, false, false)
 	if err != nil {
 		return SmartError(err)
 	}

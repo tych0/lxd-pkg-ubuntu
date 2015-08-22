@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"gopkg.in/lxc/go-lxc.v2"
 	"gopkg.in/yaml.v2"
 
+	"github.com/lxc/lxd/lxd/migration"
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
@@ -31,7 +34,7 @@ import (
 
 // ExtractInterfaceFromConfigName returns "eth0" from "volatile.eth0.hwaddr",
 // or an error if the key does not match this pattern.
-func ExtractInterfaceFromConfigName(k string) (string, error) {
+func extractInterfaceFromConfigName(k string) (string, error) {
 	re := regexp.MustCompile("volatile\\.([^.]*)\\.hwaddr")
 	m := re.FindStringSubmatch(k)
 	if m != nil && len(m) > 1 {
@@ -54,7 +57,7 @@ func validateRawLxc(rawLxc string) error {
 
 // GenerateMacAddr generates a mac address from a string template:
 // e.g. "00:11:22:xx:xx:xx" -> "00:11:22:af:3e:51"
-func GenerateMacAddr(template string) (string, error) {
+func generateMacAddr(template string) (string, error) {
 	ret := bytes.Buffer{}
 
 	for _, c := range template {
@@ -105,9 +108,8 @@ type containerLXD struct {
 	idmapset     *shared.IdmapSet
 	cType        containerType
 
-	// These two will contain the containers data without profiles
-	myConfig  map[string]string
-	myDevices shared.Devices
+	baseConfig  map[string]string
+	baseDevices shared.Devices
 
 	Storage storage
 }
@@ -130,12 +132,16 @@ type container interface {
 
 	IsPrivileged() bool
 	IsRunning() bool
-	IsEmpheral() bool
+	IsEphemeral() bool
 	IsSnapshot() bool
 
 	IDGet() int
 	NameGet() string
 	ArchitectureGet() int
+	ConfigGet() map[string]string
+	ConfigKeySet(key string, value string) error
+	DevicesGet() shared.Devices
+	ProfilesGet() []string
 	PathGet(newName string) string
 	RootfsPathGet() string
 	TemplatesPathGet() string
@@ -143,8 +149,10 @@ type container interface {
 	LogFilePathGet() string
 	LogPathGet() string
 	InitPidGet() (int, error)
+	StateGet() string
+
 	IdmapSetGet() (*shared.IdmapSet, error)
-	ConfigGet() containerLXDArgs
+	LastIdmapSetGet() (*shared.IdmapSet, error)
 
 	TemplateApply(trigger string) error
 	ExportToTar(snap string, w io.Writer) error
@@ -183,6 +191,10 @@ func containerLXDCreateFromImage(d *Daemon, name string,
 		return nil, err
 	}
 
+	if err := dbImageLastAccessUpdate(d.db, hash); err != nil {
+		return nil, fmt.Errorf("Error updating image last use date: %s", err)
+	}
+
 	// Now create the storage from an image
 	if err := c.Storage.ContainerCreateFromImage(c, hash); err != nil {
 		c.Delete()
@@ -195,19 +207,16 @@ func containerLXDCreateFromImage(d *Daemon, name string,
 func containerLXDCreateAsCopy(d *Daemon, name string,
 	args containerLXDArgs, sourceContainer container) (container, error) {
 
-	// Create the container
 	c, err := containerLXDCreateInternal(d, name, args)
 	if err != nil {
 		return nil, err
 	}
 
-	// Replace the config
-	if err := c.ConfigReplace(sourceContainer.ConfigGet()); err != nil {
+	if err := c.ConfigReplace(args); err != nil {
 		c.Delete()
 		return nil, err
 	}
 
-	// Now copy the source
 	sourceContainer.StorageStart()
 	defer sourceContainer.StorageStop()
 
@@ -229,10 +238,6 @@ func containerLXDCreateAsSnapshot(d *Daemon, name string,
 		return nil, err
 	}
 
-	// Now copy the source
-	sourceContainer.StorageStart()
-	defer sourceContainer.StorageStop()
-
 	if err := c.Storage.ContainerSnapshotCreate(c, sourceContainer); err != nil {
 		c.Delete()
 		return nil, err
@@ -247,16 +252,24 @@ func containerLXDCreateAsSnapshot(d *Daemon, name string,
 		}
 
 		// TODO - shouldn't we freeze for the duration of rootfs snapshot below?
-		if !c.IsRunning() {
+		if !sourceContainer.IsRunning() {
 			c.Delete()
 			return nil, fmt.Errorf("Container not running\n")
 		}
+		opts := lxc.CheckpointOptions{Directory: stateDir, Stop: true, Verbose: true}
+		source, err := sourceContainer.LXContainerGet()
 		if err != nil {
 			c.Delete()
 			return nil, err
 		}
-		opts := lxc.CheckpointOptions{Directory: stateDir, Stop: true, Verbose: true}
-		if err := c.c.Checkpoint(opts); err != nil {
+
+		err = source.Checkpoint(opts)
+		err2 := migration.CollectCRIULogFile(source, stateDir, "snapshot", "dump")
+		if err != nil {
+			shared.Log.Warn("failed to collect criu log file", log.Ctx{"error": err2})
+		}
+
+		if err != nil {
 			c.Delete()
 			return nil, err
 		}
@@ -304,11 +317,22 @@ func containerLXDCreateInternal(
 	}
 
 	if args.BaseImage != "" {
-		args.Config["volatile.baseImage"] = args.BaseImage
+		args.Config["volatile.base_image"] = args.BaseImage
 	}
 
 	if args.Devices == nil {
 		args.Devices = shared.Devices{}
+	}
+
+	profiles, err := dbProfilesGet(d.db)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, profile := range args.Profiles {
+		if !shared.StringInSlice(profile, profiles) {
+			return nil, fmt.Errorf("Requested profile '%s' doesn't exist", profile)
+		}
 	}
 
 	id, err := dbContainerCreate(d.db, name, args)
@@ -320,6 +344,15 @@ func containerLXDCreateInternal(
 		"Container created in the DB",
 		log.Ctx{"container": name, "id": id})
 
+	baseConfig := map[string]string{}
+	if err := shared.DeepCopy(&args.Config, &baseConfig); err != nil {
+		return nil, err
+	}
+	baseDevices := shared.Devices{}
+	if err := shared.DeepCopy(&args.Devices, &baseDevices); err != nil {
+		return nil, err
+	}
+
 	c := &containerLXD{
 		daemon:       d,
 		id:           id,
@@ -330,8 +363,8 @@ func containerLXDCreateInternal(
 		profiles:     args.Profiles,
 		devices:      args.Devices,
 		cType:        args.Ctype,
-		myConfig:     args.Config,
-		myDevices:    args.Devices}
+		baseConfig:   baseConfig,
+		baseDevices:  baseDevices}
 
 	// No need to detect storage here, its a new container.
 	c.Storage = d.Storage
@@ -352,6 +385,15 @@ func containerLXDLoad(d *Daemon, name string) (container, error) {
 		return nil, err
 	}
 
+	baseConfig := map[string]string{}
+	if err := shared.DeepCopy(&args.Config, &baseConfig); err != nil {
+		return nil, err
+	}
+	baseDevices := shared.Devices{}
+	if err := shared.DeepCopy(&args.Devices, &baseDevices); err != nil {
+		return nil, err
+	}
+
 	c := &containerLXD{
 		daemon:       d,
 		id:           args.ID,
@@ -362,8 +404,8 @@ func containerLXDLoad(d *Daemon, name string) (container, error) {
 		profiles:     args.Profiles,
 		devices:      args.Devices,
 		cType:        args.Ctype,
-		myConfig:     args.Config,
-		myDevices:    args.Devices}
+		baseConfig:   baseConfig,
+		baseDevices:  baseDevices}
 
 	s, err := storageForFilename(d, c.PathGet(""))
 	if err != nil {
@@ -440,15 +482,24 @@ func (c *containerLXD) init() error {
 		return err
 	}
 
-	/* apply profiles */
 	for _, p := range c.profiles {
 		if err := c.applyProfile(p); err != nil {
 			return err
 		}
 	}
 
+	// base per-container config should override profile config, so we apply it second
+	if err := c.applyConfig(c.baseConfig); err != nil {
+		return err
+	}
+
 	if err := c.setupMacAddresses(); err != nil {
 		return err
+	}
+
+	// Allow overwrites of devices
+	for k, v := range c.baseDevices {
+		c.devices[k] = v
 	}
 
 	/* now add the lxc.* entries for the configured devices */
@@ -468,7 +519,7 @@ func (c *containerLXD) init() error {
 		return err
 	}
 
-	if err := c.applyConfig(c.config, false); err != nil {
+	if err := c.applyPostDeviceConfig(); err != nil {
 		return err
 	}
 
@@ -487,48 +538,101 @@ func (c *containerLXD) RenderState() (*shared.ContainerState, error) {
 	return &shared.ContainerState{
 		Name:            c.name,
 		Profiles:        c.profiles,
-		Config:          c.myConfig,
+		Config:          c.baseConfig,
 		ExpandedConfig:  c.config,
 		Userdata:        []byte{},
 		Status:          status,
-		Devices:         c.myDevices,
+		Devices:         c.baseDevices,
 		ExpandedDevices: c.devices,
 		Ephemeral:       c.ephemeral,
 	}, nil
 }
 
 func (c *containerLXD) Start() error {
+	if c.IsRunning() {
+		return fmt.Errorf("the container is already running")
+	}
+
 	// Start the storage for this container
-	if err := c.Storage.ContainerStart(c); err != nil {
+	if err := c.StorageStart(); err != nil {
 		return err
 	}
 
 	f, err := ioutil.TempFile("", "lxd_lxc_startconfig_")
 	if err != nil {
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 	configPath := f.Name()
 	if err = f.Chmod(0600); err != nil {
 		f.Close()
 		os.Remove(configPath)
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 	f.Close()
 
 	err = c.c.SaveConfigFile(configPath)
 	if err != nil {
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 
 	err = c.TemplateApply("start")
 	if err != nil {
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 
+	/* Deal with idmap changes */
+	idmap, err := c.IdmapSetGet()
+	if err != nil {
+		return err
+	}
+
+	lastIdmap, err := c.LastIdmapSetGet()
+	if err != nil {
+		return err
+	}
+
+	var jsonIdmap string
+	if idmap != nil {
+		idmapBytes, err := json.Marshal(idmap.Idmap)
+		if err != nil {
+			c.StorageStop()
+			return err
+		}
+		jsonIdmap = string(idmapBytes)
+	} else {
+		jsonIdmap = "[]"
+	}
+
+	if !reflect.DeepEqual(idmap, lastIdmap) {
+		shared.Debugf("Container idmap changed, remapping")
+
+		if lastIdmap != nil {
+			if err := lastIdmap.UnshiftRootfs(c.RootfsPathGet()); err != nil {
+				c.StorageStop()
+				return err
+			}
+		}
+
+		if idmap != nil {
+			if err := idmap.ShiftRootfs(c.RootfsPathGet()); err != nil {
+				c.StorageStop()
+				return err
+			}
+		}
+	}
+
+	err = c.ConfigKeySet("volatile.last_state.idmap", jsonIdmap)
+
+	if err != nil {
+		c.StorageStop()
+		return err
+	}
+
+	/* Actually start the container */
 	err = exec.Command(
 		os.Args[0],
 		"forkstart",
@@ -537,7 +641,7 @@ func (c *containerLXD) Start() error {
 		configPath).Run()
 
 	if err != nil {
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		err = fmt.Errorf(
 			"Error calling 'lxd forkstart %s %s %s': err='%v'",
 			c.name,
@@ -578,12 +682,12 @@ func (c *containerLXD) IsRunning() bool {
 func (c *containerLXD) Shutdown(timeout time.Duration) error {
 	if err := c.c.Shutdown(timeout); err != nil {
 		// Still try to unload the storage.
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 
 	// Stop the storage for this container
-	if err := c.Storage.ContainerStop(c); err != nil {
+	if err := c.StorageStop(); err != nil {
 		return err
 	}
 
@@ -593,12 +697,12 @@ func (c *containerLXD) Shutdown(timeout time.Duration) error {
 func (c *containerLXD) Stop() error {
 	if err := c.c.Stop(); err != nil {
 		// Still try to unload the storage.
-		c.Storage.ContainerStop(c)
+		c.StorageStop()
 		return err
 	}
 
 	// Stop the storage for this container
-	if err := c.Storage.ContainerStop(c); err != nil {
+	if err := c.StorageStop(); err != nil {
 		return err
 	}
 
@@ -666,8 +770,15 @@ func (c *containerLXD) Restore(sourceContainer container) error {
 		return err
 	}
 
-	// Replace the config
-	err = c.ConfigReplace(sourceContainer.ConfigGet())
+	args := containerLXDArgs{
+		Ctype:        cTypeRegular,
+		Config:       sourceContainer.ConfigGet(),
+		Profiles:     sourceContainer.ProfilesGet(),
+		Ephemeral:    sourceContainer.IsEphemeral(),
+		Architecture: sourceContainer.ArchitectureGet(),
+		Devices:      sourceContainer.DevicesGet(),
+	}
+	err = c.ConfigReplace(args)
 	if err != nil {
 		shared.Log.Error("RESTORE => Restore of the configuration failed",
 			log.Ctx{
@@ -685,12 +796,23 @@ func (c *containerLXD) Restore(sourceContainer container) error {
 }
 
 func (c *containerLXD) Delete() error {
-	if err := containerDeleteSnapshots(c.daemon, c.NameGet()); err != nil {
-		return err
-	}
+	shared.Log.Debug("containerLXD.Delete", log.Ctx{"c.name": c.NameGet(), "type": c.cType})
 
-	if err := c.Storage.ContainerDelete(c); err != nil {
-		return err
+	switch c.cType {
+	case cTypeRegular:
+		if err := containerDeleteSnapshots(c.daemon, c.NameGet()); err != nil {
+			return err
+		}
+
+		if err := c.Storage.ContainerDelete(c); err != nil {
+			return err
+		}
+	case cTypeSnapshot:
+		if err := c.Storage.ContainerSnapshotDelete(c); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("Unknown cType: %d", c.cType)
 	}
 
 	if err := dbContainerRemove(c.daemon.db, c.NameGet()); err != nil {
@@ -723,7 +845,7 @@ func (c *containerLXD) Rename(newName string) error {
 	return nil
 }
 
-func (c *containerLXD) IsEmpheral() bool {
+func (c *containerLXD) IsEphemeral() bool {
 	return c.ephemeral
 }
 
@@ -775,8 +897,48 @@ func (c *containerLXD) InitPidGet() (int, error) {
 	return c.c.InitPid(), nil
 }
 
+func (c *containerLXD) StateGet() string {
+	return c.c.State().String()
+}
+
 func (c *containerLXD) IdmapSetGet() (*shared.IdmapSet, error) {
 	return c.idmapset, nil
+}
+
+func (c *containerLXD) LastIdmapSetGet() (*shared.IdmapSet, error) {
+	config := c.ConfigGet()
+	lastJsonIdmap := config["volatile.last_state.idmap"]
+
+	if lastJsonIdmap == "" {
+		return c.IdmapSetGet()
+	}
+
+	lastIdmap := new(shared.IdmapSet)
+	err := json.Unmarshal([]byte(lastJsonIdmap), &lastIdmap.Idmap)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(lastIdmap.Idmap) == 0 {
+		return nil, nil
+	}
+
+	return lastIdmap, nil
+}
+
+func (c *containerLXD) ConfigKeySet(key string, value string) error {
+	c.baseConfig[key] = value
+
+	args := containerLXDArgs{
+		Ctype:        c.cType,
+		Config:       c.baseConfig,
+		Profiles:     c.profiles,
+		Ephemeral:    c.ephemeral,
+		Architecture: c.architecture,
+		Devices:      c.baseDevices,
+	}
+
+	return c.ConfigReplace(args)
 }
 
 func (c *containerLXD) LXContainerGet() (*lxc.Container, error) {
@@ -785,7 +947,7 @@ func (c *containerLXD) LXContainerGet() (*lxc.Container, error) {
 
 // ConfigReplace replaces the config of container and tries to live apply
 // the new configuration.
-func (c *containerLXD) ConfigReplace(newConfig containerLXDArgs) error {
+func (c *containerLXD) ConfigReplace(newContainerArgs containerLXDArgs) error {
 	/* check to see that the config actually applies to the container
 	 * successfully before saving it. in particular, raw.lxc and
 	 * raw.apparmor need to be parsed once to make sure they make sense.
@@ -793,11 +955,11 @@ func (c *containerLXD) ConfigReplace(newConfig containerLXDArgs) error {
 	preDevList := c.devices
 
 	/* Validate devices */
-	if err := validateConfig(c, newConfig.Devices); err != nil {
+	if err := validateConfig(c, newContainerArgs.Devices); err != nil {
 		return err
 	}
 
-	if err := c.applyConfig(newConfig.Config, false); err != nil {
+	if err := c.applyConfig(newContainerArgs.Config); err != nil {
 		return err
 	}
 
@@ -815,54 +977,84 @@ func (c *containerLXD) ConfigReplace(newConfig containerLXDArgs) error {
 		return err
 	}
 
-	if err = dbContainerConfigInsert(tx, c.id, newConfig.Config); err != nil {
+	if err = dbContainerConfigInsert(tx, c.id, newContainerArgs.Config); err != nil {
 		shared.Debugf("Error inserting configuration for container %s\n", c.NameGet())
 		tx.Rollback()
 		return err
 	}
 
 	/* handle profiles */
-	if emptyProfile(newConfig.Profiles) {
+	if emptyProfile(newContainerArgs.Profiles) {
 		_, err := tx.Exec("DELETE from containers_profiles where container_id=?", c.id)
 		if err != nil {
 			tx.Rollback()
 			return err
 		}
 	} else {
-		if err := dbContainerProfilesInsert(tx, c.id, newConfig.Profiles); err != nil {
+		if err := dbContainerProfilesInsert(tx, c.id, newContainerArgs.Profiles); err != nil {
 
 			tx.Rollback()
 			return err
 		}
 	}
 
-	err = dbDevicesAdd(tx, "container", int64(c.id), newConfig.Devices)
+	err = dbDevicesAdd(tx, "container", int64(c.id), newContainerArgs.Devices)
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 
+	if err := c.applyPostDeviceConfig(); err != nil {
+		return err
+	}
+
+	c.baseConfig = newContainerArgs.Config
+	c.baseDevices = newContainerArgs.Devices
+
 	if !c.IsRunning() {
 		return txCommit(tx)
 	}
 
-	// Apply new devices
-	if err := devicesApplyDeltaLive(tx, c, preDevList, newConfig.Devices); err != nil {
+	if err := txCommit(tx); err != nil {
 		return err
 	}
 
-	return txCommit(tx)
-}
+	// add devices from new profile list to the desired goal set
+	for _, p := range c.profiles {
+		profileDevs, err := dbDevicesGet(c.daemon.db, p, true)
+		if err != nil {
+			return fmt.Errorf("Error reading devices from profile '%s': %v", p, err)
+		}
 
-func (c *containerLXD) ConfigGet() containerLXDArgs {
-	newConfig := containerLXDArgs{
-		Config:    c.myConfig,
-		Devices:   c.myDevices,
-		Profiles:  c.profiles,
-		Ephemeral: c.ephemeral,
+		newContainerArgs.Devices.ExtendFromProfile(preDevList, profileDevs)
 	}
 
-	return newConfig
+	tx, err = dbBegin(c.daemon.db)
+	if err != nil {
+		return err
+	}
+
+	if err := devicesApplyDeltaLive(tx, c, preDevList, newContainerArgs.Devices); err != nil {
+		return err
+	}
+
+	if err := txCommit(tx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *containerLXD) ConfigGet() map[string]string {
+	return c.config
+}
+
+func (c *containerLXD) DevicesGet() shared.Devices {
+	return c.devices
+}
+
+func (c *containerLXD) ProfilesGet() []string {
+	return c.profiles
 }
 
 /*
@@ -872,9 +1064,20 @@ func (c *containerLXD) ConfigGet() containerLXDArgs {
  *     rootfs/
  */
 func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
-	if snap != "" && c.IsRunning() {
+	if snap == "" && c.IsRunning() {
 		return fmt.Errorf("Cannot export a running container as image")
 	}
+
+	idmap, err := c.LastIdmapSetGet()
+	if err != nil {
+		return err
+	}
+
+	if err := idmap.UnshiftRootfs(c.RootfsPathGet()); err != nil {
+		return err
+	}
+
+	defer idmap.ShiftRootfs(c.RootfsPathGet())
 
 	tw := tar.NewWriter(w)
 
@@ -886,16 +1089,15 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 	// Path inside the tar image is the pathname starting after cDir
 	offset := len(cDir) + 1
 
-	fnam := filepath.Join(cDir, "metadata.yaml")
 	writeToTar := func(path string, fi os.FileInfo, err error) error {
 		if err := c.tarStoreFile(linkmap, offset, tw, path, fi); err != nil {
-			shared.Debugf("error tarring up %s: %s\n", path, err)
+			shared.Debugf("Error tarring up %s: %s\n", path, err)
 			return err
 		}
 		return nil
 	}
 
-	fnam = filepath.Join(cDir, "metadata.yaml")
+	fnam := filepath.Join(cDir, "metadata.yaml")
 	if shared.PathExists(fnam) {
 		fi, err := os.Lstat(fnam)
 		if err != nil {
@@ -904,7 +1106,7 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 			return err
 		}
 		if err := c.tarStoreFile(linkmap, offset, tw, fnam, fi); err != nil {
-			shared.Debugf("exportToTar: error writing to tarfile: %s\n", err)
+			shared.Debugf("Error writing to tarfile: %s\n", err)
 			tw.Close()
 			return err
 		}
@@ -1117,7 +1319,7 @@ func (c *containerLXD) AttachMount(m shared.Device) error {
 	return nil
 }
 
-func (c *containerLXD) applyConfig(config map[string]string, fromProfile bool) error {
+func (c *containerLXD) applyConfig(config map[string]string) error {
 	var err error
 	for k, v := range config {
 		switch k {
@@ -1146,16 +1348,18 @@ func (c *containerLXD) applyConfig(config map[string]string, fromProfile bool) e
 			c.config[k] = v
 		}
 		if err != nil {
-			shared.Debugf("error setting %s: %q\n", k, err)
+			shared.Debugf("Error setting %s: %q\n", k, err)
 			return err
 		}
 	}
+	return nil
+}
 
-	if fromProfile {
-		return nil
-	}
+func (c *containerLXD) applyPostDeviceConfig() error {
+	// applies config that must be delayed until after devices are
+	// instantiated, see bug #588 and fix #635
 
-	if lxcConfig, ok := config["raw.lxc"]; ok {
+	if lxcConfig, ok := c.config["raw.lxc"]; ok {
 		if err := validateRawLxc(lxcConfig); err != nil {
 			return err
 		}
@@ -1198,10 +1402,10 @@ func (c *containerLXD) applyProfile(p string) error {
 		k = r[0].(string)
 		v = r[1].(string)
 
-		shared.Debugf("applying %s: %s", k, v)
+		shared.Debugf("Applying %s: %s", k, v)
 		if k == "raw.lxc" {
 			if _, ok := c.config["raw.lxc"]; ok {
-				shared.Debugf("ignoring overridden raw.lxc from profile")
+				shared.Debugf("Ignoring overridden raw.lxc from profile '%s'", p)
 				continue
 			}
 		}
@@ -1217,7 +1421,7 @@ func (c *containerLXD) applyProfile(p string) error {
 		c.devices[k] = v
 	}
 
-	return c.applyConfig(config, true)
+	return c.applyConfig(config)
 }
 
 func (c *containerLXD) updateContainerHWAddr(k, v string) {
@@ -1227,7 +1431,7 @@ func (c *containerLXD) updateContainerHWAddr(k, v string) {
 		}
 
 		for key := range c.config {
-			device, err := ExtractInterfaceFromConfigName(key)
+			device, err := extractInterfaceFromConfigName(key)
 			if err == nil && device == name {
 				d["hwaddr"] = v
 				c.config[key] = v
@@ -1248,7 +1452,7 @@ func (c *containerLXD) setupMacAddresses() error {
 		found := false
 
 		for key, val := range c.config {
-			device, err := ExtractInterfaceFromConfigName(key)
+			device, err := extractInterfaceFromConfigName(key)
 			if err == nil && device == name {
 				found = true
 				d["hwaddr"] = val
@@ -1259,12 +1463,12 @@ func (c *containerLXD) setupMacAddresses() error {
 			var hwaddr string
 			var err error
 			if d["hwaddr"] != "" {
-				hwaddr, err = GenerateMacAddr(d["hwaddr"])
+				hwaddr, err = generateMacAddr(d["hwaddr"])
 				if err != nil {
 					return err
 				}
 			} else {
-				hwaddr, err = GenerateMacAddr("00:16:3e:xx:xx:xx")
+				hwaddr, err = generateMacAddr("00:16:3e:xx:xx:xx")
 				if err != nil {
 					return err
 				}
@@ -1274,6 +1478,7 @@ func (c *containerLXD) setupMacAddresses() error {
 				d["hwaddr"] = hwaddr
 				key := fmt.Sprintf("volatile.%s.hwaddr", name)
 				c.config[key] = hwaddr
+				c.baseConfig[key] = hwaddr
 				newConfigEntries[key] = hwaddr
 			}
 		}
@@ -1387,7 +1592,7 @@ func (c *containerLXD) applyDevices() error {
 			continue
 		}
 
-		configs, err := DeviceToLxc(d)
+		configs, err := deviceToLxc(d)
 		if err != nil {
 			return fmt.Errorf("Failed configuring device %s: %s\n", name, err)
 		}

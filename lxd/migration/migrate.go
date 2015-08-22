@@ -6,13 +6,17 @@
 package migration
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -36,6 +40,7 @@ type migrationFields struct {
 	fsConn   *websocket.Conn
 
 	container *lxc.Container
+	idmapset  *shared.IdmapSet
 }
 
 func (c *migrationFields) send(m proto.Message) error {
@@ -60,7 +65,7 @@ func (c *migrationFields) recv(m proto.Message) error {
 	}
 
 	if mt != websocket.BinaryMessage {
-		return fmt.Errorf("only binary messages allowed")
+		return fmt.Errorf("Only binary messages allowed")
 	}
 
 	buf, err := ioutil.ReadAll(r)
@@ -109,7 +114,7 @@ func (c *migrationFields) controlChannel() <-chan MigrationControl {
 		msg := MigrationControl{}
 		err := c.recv(&msg)
 		if err != nil {
-			shared.Debugf("got error reading migration control socket %s", err)
+			shared.Debugf("Got error reading migration control socket %s", err)
 			close(ch)
 			return
 		}
@@ -119,10 +124,30 @@ func (c *migrationFields) controlChannel() <-chan MigrationControl {
 	return ch
 }
 
-func collectMigrationLogFile(c *lxc.Container, imagesDir string, method string) error {
+func CollectCRIULogFile(c *lxc.Container, imagesDir string, function string, method string) error {
 	t := time.Now().Format(time.RFC3339)
-	newPath := shared.LogPath(c.Name(), fmt.Sprintf("migration_%s_%s.log", method, t))
+	newPath := shared.LogPath(c.Name(), fmt.Sprintf("%s_%s_%s.log", function, method, t))
 	return shared.FileCopy(filepath.Join(imagesDir, fmt.Sprintf("%s.log", method)), newPath)
+}
+
+func GetCRIULogErrors(imagesDir string, method string) string {
+	f, err := os.Open(path.Join(imagesDir, fmt.Sprintf("%s.log", method)))
+	if err != nil {
+		return fmt.Sprintf("Problem accessing CRIU log: %s", err)
+	}
+
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	ret := []string{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "Error") {
+			ret = append(ret, scanner.Text())
+		}
+	}
+
+	return strings.Join(ret, "\n")
 }
 
 type migrationSourceWs struct {
@@ -131,8 +156,8 @@ type migrationSourceWs struct {
 	allConnected chan bool
 }
 
-func NewMigrationSource(c *lxc.Container) (shared.OperationWebsocket, error) {
-	ret := migrationSourceWs{migrationFields{container: c}, make(chan bool, 1)}
+func NewMigrationSource(c *lxc.Container, idmapset *shared.IdmapSet) (shared.OperationWebsocket, error) {
+	ret := migrationSourceWs{migrationFields{container: c, idmapset: idmapset}, make(chan bool, 1)}
 
 	var err error
 	ret.controlSecret, err = shared.RandomCryptoString()
@@ -207,9 +232,24 @@ func (s *migrationSourceWs) Do() shared.OperationResult {
 		criuType = nil
 	}
 
+	idmaps := make([]*IDMapType, 0)
+
+	for _, ctnIdmap := range s.idmapset.Idmap {
+		idmap := IDMapType{
+			Isuid:    proto.Bool(ctnIdmap.Isuid),
+			Isgid:    proto.Bool(ctnIdmap.Isgid),
+			Hostid:   proto.Int(ctnIdmap.Hostid),
+			Nsid:     proto.Int(ctnIdmap.Nsid),
+			Maprange: proto.Int(ctnIdmap.Maprange),
+		}
+
+		idmaps = append(idmaps, &idmap)
+	}
+
 	header := MigrationHeader{
-		Fs:   MigrationFSType_RSYNC.Enum(),
-		Criu: criuType,
+		Fs:    MigrationFSType_RSYNC.Enum(),
+		Criu:  criuType,
+		Idmap: idmaps,
 	}
 
 	if err := s.send(&header); err != nil {
@@ -223,18 +263,18 @@ func (s *migrationSourceWs) Do() shared.OperationResult {
 	}
 
 	if *header.Fs != MigrationFSType_RSYNC {
-		err := fmt.Errorf("formats other than rsync not understood")
+		err := fmt.Errorf("Formats other than rsync not understood")
 		s.sendControl(err)
 		return shared.OperationError(err)
 	}
 
 	if s.live {
 		if header.Criu == nil {
-			err := fmt.Errorf("got no CRIU socket type for live migration")
+			err := fmt.Errorf("Got no CRIU socket type for live migration")
 			s.sendControl(err)
 			return shared.OperationError(err)
 		} else if *header.Criu != CRIUType_CRIU_RSYNC {
-			err := fmt.Errorf("formats other than criu rsync not understood")
+			err := fmt.Errorf("Formats other than criu rsync not understood")
 			s.sendControl(err)
 			return shared.OperationError(err)
 		}
@@ -249,11 +289,14 @@ func (s *migrationSourceWs) Do() shared.OperationResult {
 		opts := lxc.CheckpointOptions{Stop: true, Directory: checkpointDir, Verbose: true}
 		err = s.container.Checkpoint(opts)
 
-		if err2 := collectMigrationLogFile(s.container, checkpointDir, "dump"); err2 != nil {
-			shared.Debugf("error collecting checkpoint log file %s", err)
+		if err2 := CollectCRIULogFile(s.container, checkpointDir, "migration", "dump"); err2 != nil {
+			shared.Debugf("Error collecting checkpoint log file %s", err)
 		}
 
 		if err != nil {
+			log := GetCRIULogErrors(checkpointDir, "dump")
+
+			err = fmt.Errorf("checkpoint failed:\n%s", log)
 			s.sendControl(err)
 			return shared.OperationError(err)
 		}
@@ -319,12 +362,12 @@ func NewMigrationSink(args *MigrationSinkArgs) (func() error, error) {
 	var ok bool
 	sink.controlSecret, ok = args.Secrets["control"]
 	if !ok {
-		return nil, fmt.Errorf("missing control secret")
+		return nil, fmt.Errorf("Missing control secret")
 	}
 
 	sink.fsSecret, ok = args.Secrets["fs"]
 	if !ok {
-		return nil, fmt.Errorf("missing fs secret")
+		return nil, fmt.Errorf("Missing fs secret")
 	}
 
 	sink.criuSecret, ok = args.Secrets["criu"]
@@ -386,6 +429,9 @@ func (c *migrationSink) do() error {
 	restore := make(chan error)
 	go func(c *migrationSink) {
 		imagesDir := ""
+		srcIdmap := new(shared.IdmapSet)
+		dstIdmap := c.IdmapSet
+
 		if c.live {
 			var err error
 			imagesDir, err = ioutil.TempDir("", "lxd_migration_")
@@ -396,13 +442,13 @@ func (c *migrationSink) do() error {
 			}
 
 			defer func() {
-				err := collectMigrationLogFile(c.container, imagesDir, "restore")
+				err := CollectCRIULogFile(c.container, imagesDir, "migration", "restore")
 				/*
 				 * If the checkpoint fails, we won't have any log to collect,
 				 * so don't warn about that.
 				 */
 				if err != nil && !os.IsNotExist(err) {
-					shared.Debugf("error collectiong migration log file %s", err)
+					shared.Debugf("Error collectiong migration log file %s", err)
 				}
 
 				os.RemoveAll(imagesDir)
@@ -414,6 +460,21 @@ func (c *migrationSink) do() error {
 				c.sendControl(err)
 				return
 			}
+
+			/*
+			 * For unprivileged containers we need to shift the
+			 * perms on the images images so that they can be
+			 * opened by the process after it is in its user
+			 * namespace.
+			 */
+			if dstIdmap != nil {
+				if err := dstIdmap.ShiftRootfs(imagesDir); err != nil {
+					restore <- err
+					os.RemoveAll(imagesDir)
+					c.sendControl(err)
+					return
+				}
+			}
 		}
 
 		fsDir := c.container.ConfigItem("lxc.rootfs")[0]
@@ -423,8 +484,24 @@ func (c *migrationSink) do() error {
 			return
 		}
 
-		if c.IdmapSet != nil {
-			if err := c.IdmapSet.ShiftRootfs(shared.VarPath("containers", c.container.Name())); err != nil {
+		for _, idmap := range header.Idmap {
+			e := shared.IdmapEntry{
+				Isuid:    *idmap.Isuid,
+				Isgid:    *idmap.Isgid,
+				Nsid:     int(*idmap.Nsid),
+				Hostid:   int(*idmap.Hostid),
+				Maprange: int(*idmap.Maprange)}
+			srcIdmap.Idmap = shared.Extend(srcIdmap.Idmap, e)
+		}
+
+		if !reflect.DeepEqual(srcIdmap, dstIdmap) {
+			if err := srcIdmap.UnshiftRootfs(shared.VarPath("containers", c.container.Name())); err != nil {
+				restore <- err
+				c.sendControl(err)
+				return
+			}
+
+			if err := dstIdmap.ShiftRootfs(shared.VarPath("containers", c.container.Name())); err != nil {
 				restore <- err
 				c.sendControl(err)
 				return
@@ -459,7 +536,13 @@ func (c *migrationSink) do() error {
 				imagesDir,
 			)
 
-			restore <- cmd.Run()
+			err = cmd.Run()
+			if err != nil {
+				log := GetCRIULogErrors(imagesDir, "restore")
+				err = fmt.Errorf("restore failed:\n%s", log)
+			}
+
+			restore <- err
 		} else {
 			restore <- nil
 		}
@@ -475,7 +558,7 @@ func (c *migrationSink) do() error {
 		case msg, ok := <-source:
 			if !ok {
 				c.disconnect()
-				return fmt.Errorf("got error reading source")
+				return fmt.Errorf("Got error reading source")
 			}
 			if !*msg.Success {
 				c.disconnect()
@@ -484,7 +567,7 @@ func (c *migrationSink) do() error {
 				// The source can only tell us it failed (e.g. if
 				// checkpointing failed). We have to tell the source
 				// whether or not the restore was successful.
-				shared.Debugf("unknown message %v from source", msg)
+				shared.Debugf("Unknown message %v from source", msg)
 			}
 		}
 	}

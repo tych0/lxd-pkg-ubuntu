@@ -38,6 +38,7 @@ type Client struct {
 	http            http.Client
 	BaseURL         string
 	BaseWSURL       string
+	Transport       string
 	certf           string
 	keyf            string
 	websocketDialer websocket.Dialer
@@ -121,7 +122,7 @@ func ParseResponse(r *http.Response) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	shared.Debugf("raw response: %s", string(s))
+	shared.Debugf("Raw response: %s", string(s))
 
 	if err := json.Unmarshal(s, &ret); err != nil {
 		return nil, err
@@ -190,12 +191,14 @@ func NewClient(config *Config, remote string) (*Client, error) {
 	if remote == "" {
 		c.BaseURL = "http://unix.socket"
 		c.BaseWSURL = "ws://unix.socket"
+		c.Transport = "unix"
 		c.http.Transport = &unixTransport
 		c.websocketDialer.NetDial = unixDial
 	} else if r, ok := config.Remotes[remote]; ok {
 		if r.Addr[0:5] == "unix:" {
 			c.BaseURL = "http://unix.socket"
 			c.BaseWSURL = "ws://unix.socket"
+			c.Transport = "unix"
 			uDial := func(networ, addr string) (net.Conn, error) {
 				var err error
 				var raddr *net.UnixAddr
@@ -245,6 +248,7 @@ func NewClient(config *Config, remote string) (*Client, error) {
 				c.BaseURL = "https://" + r.Addr
 				c.BaseWSURL = "wss://" + r.Addr
 			}
+			c.Transport = "https"
 			c.http.Transport = tr
 			c.loadServerCert()
 			c.Remote = &r
@@ -257,6 +261,28 @@ func NewClient(config *Config, remote string) (*Client, error) {
 	}
 
 	return &c, nil
+}
+
+func (c *Client) Addresses() ([]string, error) {
+	addresses := make([]string, 0)
+
+	if c.Transport == "unix" {
+		serverStatus, err := c.ServerStatus()
+		if err != nil {
+			return nil, err
+		}
+		addresses = serverStatus.Environment.Addresses
+	} else if c.Transport == "https" {
+		addresses = append(addresses, c.BaseURL[8:])
+	} else {
+		return nil, fmt.Errorf(gettext.Gettext("unknown transport type: %s"), c.Transport)
+	}
+
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf(gettext.Gettext("The source remote isn't available over the network"))
+	}
+
+	return addresses, nil
 }
 
 func (c *Client) get(base string) (*Response, error) {
@@ -307,7 +333,7 @@ func (c *Client) put(base string, args shared.Jmap, rtype ResponseType) (*Respon
 		return nil, err
 	}
 
-	shared.Debugf("putting %s to %s", buf.String(), uri)
+	shared.Debugf("Putting %s to %s", buf.String(), uri)
 
 	req, err := http.NewRequest("PUT", uri, &buf)
 	if err != nil {
@@ -333,7 +359,7 @@ func (c *Client) post(base string, args shared.Jmap, rtype ResponseType) (*Respo
 		return nil, err
 	}
 
-	shared.Debugf("posting %s to %s", buf.String(), uri)
+	shared.Debugf("Posting %s to %s", buf.String(), uri)
 
 	req, err := http.NewRequest("POST", uri, &buf)
 	if err != nil {
@@ -383,7 +409,7 @@ func (c *Client) delete(base string, args shared.Jmap, rtype ResponseType) (*Res
 		return nil, err
 	}
 
-	shared.Debugf("deleting %s to %s", buf.String(), uri)
+	shared.Debugf("Deleting %s to %s", buf.String(), uri)
 
 	req, err := http.NewRequest("DELETE", uri, &buf)
 	if err != nil {
@@ -436,7 +462,7 @@ func (c *Client) GetServerConfig() (*Response, error) {
 }
 
 func (c *Client) Finger() error {
-	shared.Debugf("fingering the daemon")
+	shared.Debugf("Fingering the daemon")
 	resp, err := c.GetServerConfig()
 	if err != nil {
 		return err
@@ -455,7 +481,7 @@ func (c *Client) Finger() error {
 	if serverAPICompat != shared.APICompat {
 		return fmt.Errorf(gettext.Gettext("api version mismatch: mine: %q, daemon: %q"), shared.APICompat, serverAPICompat)
 	}
-	shared.Debugf("pong received")
+	shared.Debugf("Pong received")
 	return nil
 }
 
@@ -535,9 +561,25 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 		source["secret"] = md.Secret
 	}
 
-	body := shared.Jmap{"public": public, "source": source}
+	addresses, err := c.Addresses()
+	if err != nil {
+		return err
+	}
 
-	_, err = dest.post("images", body, Sync)
+	for _, addr := range addresses {
+		sourceUrl := "https://" + addr
+
+		source["server"] = sourceUrl
+		body := shared.Jmap{"public": public, "source": source}
+
+		_, err = dest.post("images", body, Sync)
+		if err != nil {
+			continue
+		}
+
+		break
+	}
+
 	if err != nil {
 		return err
 	}
@@ -1075,7 +1117,28 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 		body["ephemeral"] = ephem
 	}
 
-	resp, err := c.post("containers", body, Async)
+	var resp *Response
+
+	if imgremote != "" {
+		var addresses []string
+		addresses, err = tmpremote.Addresses()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, addr := range addresses {
+			body["source"].(shared.Jmap)["server"] = "https://" + addr
+
+			resp, err = c.post("containers", body, Async)
+			if err != nil {
+				continue
+			}
+
+			break
+		}
+	} else {
+		resp, err = c.post("containers", body, Async)
+	}
 
 	if operation != "" {
 		_, _ = tmpremote.delete("operations/"+operation, nil, Sync)
@@ -1146,7 +1209,7 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 
 					w, err := control.NextWriter(websocket.TextMessage)
 					if err != nil {
-						shared.Debugf("got error getting next writer %s", err)
+						shared.Debugf("Got error getting next writer %s", err)
 						break
 					}
 
@@ -1158,14 +1221,14 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 
 					buf, err := json.Marshal(msg)
 					if err != nil {
-						shared.Debugf("failed to convert to json %s", err)
+						shared.Debugf("Failed to convert to json %s", err)
 						break
 					}
 					_, err = w.Write(buf)
 
 					w.Close()
 					if err != nil {
-						shared.Debugf("got err writing %s", err)
+						shared.Debugf("Got err writing %s", err)
 						break
 					}
 
