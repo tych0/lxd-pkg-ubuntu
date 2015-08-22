@@ -1,3 +1,18 @@
+lxd (0.16-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.16)
+    - Fix uid/gid mapping during container migration
+    - Fix uid/gid mapping when changing the local map
+    - Fix EDITOR handling
+    - Fix stateful snapshots
+    - Fix operations between a local and remote LXD
+    - Rework container auto-start to work as expected
+  * Use golang-go for arm64
+  * Force gccgo builds on everything bug amd64, i386, armhf and arm64
+    (LP: #1481921)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sat, 22 Aug 2015 11:52:07 -0700
+
 lxd (0.15-0ubuntu2) wily; urgency=medium
 
   * No change rebuild to pick up LXc 1.1.3.

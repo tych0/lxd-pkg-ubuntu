@@ -8,7 +8,8 @@ Vcs-Git: git://github.com/lxc/lxd-pkg-ubuntu
 Vcs-Browser: https://github.com/lxc/lxd-pkg-ubuntu
 Build-Depends: debhelper (>= 9),
                dh-systemd,
-               golang-go,
+               golang-go [i386 amd64 armhf arm64],
+               gccgo [powerpc ppc64el],
                help2man,
                lxc-dev (>= 1.1.0~),
                pkg-config,
