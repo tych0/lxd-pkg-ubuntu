@@ -1,6 +1,11 @@
+# Not coming directly from the lxd code
 spelling-error-in-binary usr/bin/lxd savable saveable
 spelling-error-in-binary usr/bin/lxd secund second
 spelling-error-in-binary usr/bin/lxd changable changeable
 spelling-error-in-binary usr/bin/lxd collapsable collapsible
 spelling-error-in-binary usr/bin/lxd misformed malformed
 spelling-error-in-binary usr/bin/lxd unuseful useless
+spelling-error-in-binary usr/bin/lxd Nam Name
+
+# It's Go, not much we can do about this
+embedded-library usr/bin/lxd: sqlite
