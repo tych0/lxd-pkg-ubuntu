@@ -93,7 +93,7 @@ func storageUnprivUserAclSet(c container, dpath string) error {
 	acl := fmt.Sprintf("%d:rx", uid)
 	output, err := exec.Command("setfacl", "-m", acl, dpath).CombinedOutput()
 	if err != nil {
-		shared.Debugf("Setfacl failed:\n%s", output)
+		shared.Debugf("Setfacl failed:\n%s", string(output))
 	}
 	return err
 }
@@ -126,6 +126,7 @@ type storage interface {
 
 	GetStorageType() storageType
 	GetStorageTypeName() string
+	GetStorageTypeVersion() string
 
 	// ContainerCreate creates an empty container (no rootfs/metadata.yaml)
 	ContainerCreate(container container) error
@@ -188,12 +189,13 @@ func newStorageWithConfig(d *Daemon, sType storageType, config map[string]interf
 func storageForFilename(d *Daemon, filename string) (storage, error) {
 	config := make(map[string]interface{})
 	storageType := storageTypeDir
-	lvLinkPath := filename + ".lv"
+
 	filesystem, err := filesystemDetect(filename)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't detect filesystem for '%s': %v", filename, err)
 	}
 
+	lvLinkPath := filename + ".lv"
 	if shared.PathExists(lvLinkPath) {
 		storageType = storageTypeLvm
 		lvPath, err := os.Readlink(lvLinkPath)
@@ -215,8 +217,9 @@ func storageForImage(d *Daemon, imgInfo *shared.ImageBaseInfo) (storage, error) 
 }
 
 type storageShared struct {
-	sType     storageType
-	sTypeName string
+	sType        storageType
+	sTypeName    string
+	sTypeVersion string
 
 	log log.Logger
 }
@@ -234,6 +237,10 @@ func (ss *storageShared) GetStorageType() storageType {
 
 func (ss *storageShared) GetStorageTypeName() string {
 	return ss.sTypeName
+}
+
+func (ss *storageShared) GetStorageTypeVersion() string {
+	return ss.sTypeVersion
 }
 
 func (ss *storageShared) shiftRootfs(c container) error {
@@ -281,7 +288,7 @@ func (ss *storageShared) setUnprivUserAcl(c container, destPath string) error {
 					"chmoding the container root",
 					log.Ctx{
 						"destPath": destPath,
-						"output":   output})
+						"output":   string(output)})
 
 				return err
 			}
@@ -312,6 +319,10 @@ func (lw *storageLogWrapper) GetStorageType() storageType {
 
 func (lw *storageLogWrapper) GetStorageTypeName() string {
 	return lw.w.GetStorageTypeName()
+}
+
+func (lw *storageLogWrapper) GetStorageTypeVersion() string {
+	return lw.w.GetStorageTypeVersion()
 }
 
 func (lw *storageLogWrapper) ContainerCreate(container container) error {
