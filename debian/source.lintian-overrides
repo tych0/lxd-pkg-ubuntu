@@ -1,0 +1,2 @@
+# generator is in the directory as generator.go
+lxd source: source-is-missing dist/src/code.google.com/p/go-charset/data/data_charsets.json.go
