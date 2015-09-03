@@ -7,49 +7,101 @@ Files: *
 Copyright: 2014-2015 LXD contributors
 License: Apache-2
 
-Files: dist/src/github.com/gorilla/websocket/*
-Copyright: 2013 The Gorilla WebSocket Authors.
+Files: dist/src/code.google.com/p/go-charset/*
+Copyright: Roger Peppe <rogpeppe@gmail.com>
+License: BSD-3-clause
+
+Files: dist/src/github.com/chai2010/gettext-go/*
+Copyright: 2013 ChaiShushan <chaishushan@gmail.com>
+License: BSD-3-clause
+
+Files: dist/src/github.com/dustinkirkland/golang-petname/*
+Copyright: 2014 Dustin Kirkland <dustin.kirkland@gmail.com>
+License: Apache-2
+
+Files: dist/src/github.com/elazarl/goproxy/*
+Copyright: 2012 Elazar Leibovich
+License: BSD-3-clause
+
+Files: dist/src/github.com/godbus/dbus/*
+Copyright: 2013 Georg Reinke <guelfey@gmail.com>
+License: BSD-2-clause
+
+Files: dist/src/github.com/golang/protobuf/*
+Copyright: 2010 The Go Authors
+License: BSD-3-clause
+
+Files: dist/src/github.com/gorilla/context/*
+Copyright: 2012 Rodrigo Moraes
 License: BSD-2-clause
 
 Files: dist/src/github.com/gorilla/mux/*
 Copyright: 2012 Rodrigo Moraes
 License: BSD-2-clause
 
-Files: dist/src/github.com/gorilla/context/*
-Copyright: 2012 Rodrigo Moraes
+Files: dist/src/github.com/gorilla/websocket/*
+Copyright: 2013 The Gorilla WebSocket Authors.
 License: BSD-2-clause
 
-Files: dist/src/github.com/gosexy/gettext/*
-Copyright: 2012-2013 José Carlos Nieto
-License: Expat
-
-Files: dist/src/github.com/dustinkirkland/golang-petname/*
-Copyright: 2014 Dustin Kirkland <dustin.kirkland@gmail.com>
+Files: dist/src/github.com/inconshreveable/go-vhost/*
+Copyright: 2014 Alan Shreve
 License: Apache-2
+
+Files: dist/src/github.com/mattn/go-colorable/*
+Copyright: 2014 Yasuhiro Matsumoto
+License: Expat
 
 Files: dist/src/github.com/mattn/go-sqlite3/*
 Copyright: 2014 Yasuhiro Matsumoto
 License: Expat
 
-Files: dist/src/gopkg.in/lxc/go-lxc.v2/*
-Copyright: The go-lxc contributors
-License: LGPL-2.1 with static linking exception
+Files: dist/src/github.com/olekukonko/tablewriter/*
+Copyright: 2014 by Oleku Konko
+License: Expat
 
-Files: dist/src/gopkg.in/yaml.v2/*
-Copyright: 2011-2014 - Canonical Inc.
-License: LGPL-3 with static linking exception
+Files: dist/src/github.com/satori/go.uuid/*
+Copyright: 2013-2015 Maxim Bublis <b@codemonkey.ru>
+License: Expat
 
-Files: dist/src/gopkg.in/tomb.v2/*
-Copyright: 2010-2011 - Gustavo Niemeyer <gustavo@niemeyer.net>
-License: BSD-3-clause
+Files: dist/src/github.com/stgraber/lxd-go-systemd/*
+Copyright: Various go-systemd contributors
+License: Apache-2
+
+Files: dist/src/github.com/stretchr/objx/*
+Copyright: 2014 Stretchr, Inc.
+License: Expat
+
+Files: dist/src/github.com/stretchr/testify/*
+Copyright: 2012 - 2013 Mat Ryer and Tyler Bunnell
+License: Expat
 
 Files: dist/src/golang.org/x/crypto/*
 Copyright: 2009 The Go Authors.
 License: BSD-3-clause
 
-Files: dist/src/code.google.com/p/go-uuid/*
-Copyright: 2009,2014 Google Inc.
+Files: dist/src/gopkg.in/check.v1/*
+Copyright: 2010-2013 Gustavo Niemeyer <gustavo@niemeyer.net>
 License: BSD-2-clause
+
+Files: dist/src/gopkg.in/flosch/pongo2.v3/*
+Copyright: 2013-2014 Florian Schlachter
+License: Expat
+
+Files: dist/src/gopkg.in/inconshreveable/log15.v2/*
+Copyright: 2014 Alan Shreve
+License: Apache-2
+
+Files: dist/src/gopkg.in/lxc/go-lxc.v2/*
+Copyright: The go-lxc contributors
+License: LGPL-2.1 with static linking exception
+
+Files: dist/src/gopkg.in/tomb.v2/*
+Copyright: 2010-2011 - Gustavo Niemeyer <gustavo@niemeyer.net>
+License: BSD-3-clause
+
+Files: dist/src/gopkg.in/yaml.v2/*
+Copyright: 2011-2014 - Canonical Inc.
+License: LGPL-3 with static linking exception
 
 License: Apache-2
  Licensed under the Apache License, Version 2.0 (the "License");
