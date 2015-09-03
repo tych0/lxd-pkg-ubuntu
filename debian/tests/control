@@ -1,0 +1,12 @@
+Tests: exercise
+Depends: busybox-static,
+         curl,
+         gccgo [powerpc ppc64el],
+         golang-go [i386 amd64 armhf arm64],
+         jq,
+         git,
+         gettext,
+         make,
+         sqlite3,
+         @
+Restrictions: needs-root allow-stderr
