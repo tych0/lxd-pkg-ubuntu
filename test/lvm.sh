@@ -30,13 +30,13 @@ cleanup_vg() {
     fi
 
     if [ -n "$LXD_INSPECT_LVM" ]; then
-        echo "To poke around, use:\n LXD_DIR=$LXD_DIR sudo -E $GOPATH/bin/lxc COMMAND --config ${LXD_CONF} "
+        echo "To poke around, use:\n LXD_DIR=$LXD5_DIR sudo -E $GOPATH/bin/lxc COMMAND --config ${LXD_CONF} "
         read -p "Pausing to inspect LVM state. Hit Enter to continue cleanup." x
     fi
 
-    if [ -d "$LXD_DIR"/containers/testcontainer ]; then
+    if [ -d "$LXD5_DIR"/containers/testcontainer ]; then
         echo "unmounting testcontainer LV"
-        umount "$LXD_DIR"/containers/testcontainer || echo "Couldn't unmount testcontainer, skipping"
+        umount "$LXD5_DIR"/containers/testcontainer || echo "Couldn't unmount testcontainer, skipping"
     fi
 
     # -f removes any LVs in the VG
@@ -68,7 +68,7 @@ test_lvm() {
     create_vg lxd_test_vg
     trap cleanup_vg_and_shutdown EXIT HUP INT TERM
 
-    test_delete_with_appropriate_storage
+    test_mixing_storage
     lvremove -f lxd_test_vg/LXDPool
 
     test_lvm_withpool
@@ -81,17 +81,21 @@ test_lvm() {
     test_remote_launch_imports_lvm
 
     test_init_with_missing_vg
+
 }
 
 
-test_delete_with_appropriate_storage() {
-    PREV_LXD_DIR=$LXD_DIR
-    export LXD_DIR=$(mktemp -d -p $(pwd))
-    chmod 777 "${LXD_DIR}"
-    spawn_lxd 127.0.0.1:18451 "${LXD_DIR}"
+test_mixing_storage() {
+    export LXD5_DIR=$(mktemp -d -p $(pwd))
+    chmod 777 "${LXD5_DIR}"
+    spawn_lxd 127.0.0.1:18451 "${LXD5_DIR}"
 
+    (
+    set -e
+    LXD_DIR=$LXD5_DIR
     ../scripts/lxd-images import busybox --alias testimage || die "couldn't import image"
     lxc launch testimage reg-container || die "couldn't launch regular container"
+    lxc copy reg-container reg-container-sticks-around || die "Couldn't copy reg"
     lxc config set core.lvm_vg_name "lxd_test_vg" || die "error setting core.lvm_vg_name config"
     lxc config show | grep "lxd_test_vg" || die "test_vg not in config show output"
     lxc stop reg-container --force || die "couldn't stop reg-container"
@@ -105,16 +109,23 @@ test_delete_with_appropriate_storage() {
     check_image_exists_in_pool testimage LXDPool
 
     lxc launch testimage lvm-container || die "couldn't launch lvm container"
-    lxc config unset core.lvm_vg_name || die "couldn't unset config"
-    lxc stop lvm-container --force || die "couldn't stop lvm-container"
-    lxc start lvm-container || die "couldn't start lvm-container"
-    lxc stop lvm-container --force || die "couldn't stop lvm-container"
+    lxc copy reg-container-sticks-around lvm-from-reg || die "can't copy reg->lvm"
+    lvs lxd_test_vg/lvm--from--reg || die "snapshot LV lvm--from--reg couldn't be found"
+    lxc snapshot reg-container-sticks-around regsnap || die "Couldn't snapshot"
+    lvs lxd_test_vg/reg--container--sticks--around-regsnap && die "we should NOT have a snap lv for a reg container"
+
+    lxc config unset core.lvm_vg_name && die "shouldn't be able to unset config with existing lv containers"
     lxc delete lvm-container || die "couldn't delete container"
     lxc image delete testimage || die "couldn't delete lvm-backed image"
 
-    do_kill_lxd `cat $LXD_DIR/lxd.pid`
-    wipe ${LXD_DIR}
-    LXD_DIR=${PREV_LXD_DIR}
+    lxc delete lvm-from-reg || die "couldn't delete lvm-from-reg"
+    lxc config unset core.lvm_vg_name || die "should be able to unset config after delete all"
+
+    exit 0
+    )
+
+    do_kill_lxd `cat $LXD5_DIR/lxd.pid`
+    wipe ${LXD5_DIR}
 }
 
 check_image_exists_in_pool() {
@@ -142,11 +153,13 @@ do_image_import_subtest() {
 
 test_lvm_withpool() {
     poolname=$1
-    PREV_LXD_DIR=$LXD_DIR
-    export LXD_DIR=$(mktemp -d -p $(pwd))
-    chmod 777 "${LXD_DIR}"
-    spawn_lxd 127.0.0.1:18451 "${LXD_DIR}"
+    export LXD5_DIR=$(mktemp -d -p $(pwd))
+    chmod 777 "${LXD5_DIR}"
+    spawn_lxd 127.0.0.1:18451 "${LXD5_DIR}"
 
+    (
+    set -e
+    LXD_DIR=$LXD5_DIR
     lxc config set core.lvm_vg_name "zambonirodeo" && die "Shouldn't be able to set nonexistent LVM VG"
     lxc config show | grep "core.lvm_vg_name" && die "vg_name should not be set after invalid attempt"
 
@@ -160,14 +173,13 @@ test_lvm_withpool() {
         echo " --> only doing minimal image import subtest with user pool name"
         do_image_import_subtest $poolname
 
+        lxc config unset core.lvm_vg_name && die "should not be allowed to unset without deleting"
+        lxc image delete testimage
+        
         # check that we can unset configs in this order
         lxc config unset core.lvm_vg_name
         lxc config unset core.lvm_thinpool_name
 
-        do_kill_lxd `cat $LXD_DIR/lxd.pid`
-        sleep 3
-        wipe ${LXD_DIR}
-        LXD_DIR=${PREV_LXD_DIR}
         return
     else
         echo " --> Testing with default thin pool name 'LXDPool'"
@@ -178,59 +190,90 @@ test_lvm_withpool() {
 
     # launch a container using that image
 
-    lxc init testimage testcontainer || die "Couldn't init test container"
+    lxc init testimage test-container || die "Couldn't init test container"
 
     # check that we now have a new volume in the pool
-    lvs --noheadings -o pool_lv lxd_test_vg/testcontainer | grep "$poolname" || die "LV for new container not found or not in $poolname"
-    [ -L "${LXD_DIR}/containers/testcontainer.lv" ] || die "testcontainer lv symlink should exist!"
+    lvs --noheadings -o pool_lv lxd_test_vg/test--container | grep "$poolname" || die "LV for new container not found or not in $poolname"
+    [ -L "${LXD_DIR}/containers/test-container.lv" ] || die "test-container lv symlink should exist!"
     mountpoint -q ${LXD_DIR}/containers/testcontainer && die "LV for new container should not be mounted until container start"
 
-    lxc start testcontainer || die "Couldn't start testcontainer"
-    mountpoint -q ${LXD_DIR}/containers/testcontainer || die "testcontainer LV is not mounted?"
-    lxc list testcontainer | grep RUNNING || die "testcontainer doesn't seem to be running"
+    lxc start test-container || die "Couldn't start test-container"
+    mountpoint -q ${LXD_DIR}/containers/test-container || die "test-container LV is not mounted?"
+    lxc list test-container | grep RUNNING || die "test-container doesn't seem to be running"
 
-    lxc stop testcontainer --force || die "Couldn't stop testcontainer"
-    mountpoint -q ${LXD_DIR}/containers/testcontainer && die "LV for new container should be umounted after stop"
+    lxc stop test-container --force || die "Couldn't stop test-container"
+    mountpoint -q ${LXD_DIR}/containers/test-container && die "LV for new container should be umounted after stop"
 
-    # TODO can't do this because busybox ignores SIGPWR, breaking restart:
+    lxc snapshot test-container chillbro || die "Couldn't snapshot"
+    lvs lxd_test_vg/test--container-chillbro || die "snapshot LV test--container-chillbro  couldn't be found"
+    lxc start test-container
+    lxc exec test-container -- touch /tmp/unchill
+    lxc snapshot test-container unchillbro
+    lxc restore test-container chillbro
+
+    lxc exec test-container -- ls /tmp/unchill && die "Should not find unchill in chillbro"
+    lxc stop test-container --force
+    lxc restore test-container unchillbro
+    lxc start test-container
+    lxc exec test-container -- ls /tmp/unchill || die "should find unchill in unchillbro"
+
+    lxc copy test-container test-container-copy
+    lxc start test-container-copy
+    lxc stop test-container --force
+    lxc exec test-container-copy -- ls /tmp/unchill || die "should find unchill in copy of unchillbro"
+    lxc stop test-container-copy --force
+
+    lxc move test-container-copy test-cc
+    lvs lxd_test_vg/test--container--copy && die "test-container-copy should not exist"
+    lvs lxd_test_vg/test--cc || die "test--cc should exist"
+
+    lxc move test-container/chillbro test-container/superchill
+    lvs lxd_test_vg/test--container-superchill || die "superchill should exist"
+    lvs lxd_test_vg/test--container-chillbro && die "chillbro should not exist"
+
+    # TODO busybox ignores SIGPWR, breaking restart:
     # check that 'shutdown' also unmounts:
-    # lxc start testcontainer || die "Couldn't re-start testcontainer"
-    # lxc stop testcontainer --timeout 1 || die "Couldn't shutdown testcontainer"
-    # lxc list testcontainer | grep STOPPED || die "testcontainer is still running"
-    # mountpoint -q ${LXD_DIR}/containers/testcontainer && die "LV for new container should be umounted after shutdown"
+    # lxc start test-container || die "Couldn't re-start test-container"
+    # lxc stop test-container --timeout 1 || die "Couldn't shutdown test-container"
+    # lxc list test-container | grep STOPPED || die "test-container is still running"
+    # mountpoint -q ${LXD_DIR}/containers/test-container && die "LV for new container should be umounted after shutdown"
 
-    lxc delete testcontainer || die "Couldn't delete testcontainer"
-    lvs lxd_test_vg/testcontainer && die "testcontainer LV is still there, should've been destroyed"
-    [ -L "${LXD_DIR}/containers/testcontainer.lv" ] && die "testcontainer lv symlink should be deleted"
+    lxc delete test-container || die "Couldn't delete test-container"
+    lvs lxd_test_vg/test--container && die "test-container LV is still there, should've been destroyed"
+    [ -L "${LXD_DIR}/containers/test-container.lv" ] && die "test-container lv symlink should be deleted"
+    lvs lxd_test_vg/test--container-chillbro && die "chillbro is still there, should have been deleted"
+    [ -L "${LXD_DIR}/snapshots/test-container/chillbro.lv" ] && die "chillbro snapshot lv symlink should be deleted"
+
     lxc image delete testimage || die "Couldn't delete testimage"
-
     lvs lxd_test_vg/$imagelvname && die "lv $imagelvname is still there, should be gone"
     [ -L "${LXD_DIR}/images/${imagelvname}.lv" ] && die "image symlink is still there, should be gone."
+    exit 0
+    )
 
-    do_kill_lxd `cat $LXD_DIR/lxd.pid`
+    do_kill_lxd `cat $LXD5_DIR/lxd.pid`
     sleep 3
-    wipe ${LXD_DIR}
-    LXD_DIR=${PREV_LXD_DIR}
+    wipe ${LXD5_DIR}
 }
 
 test_remote_launch_imports_lvm() {
-    PREV_LXD_DIR=$LXD_DIR
-    export LXD_DIR=$(mktemp -d -p $(pwd))
-    chmod 777 "${LXD_DIR}"
-    spawn_lxd 127.0.0.1:18466 "${LXD_DIR}"
+    export LXD5_DIR=$(mktemp -d -p $(pwd))
+    chmod 777 "${LXD5_DIR}"
+    spawn_lxd 127.0.0.1:18466 "${LXD5_DIR}"
 
+    export LXD6_DIR=$(mktemp -d -p $(pwd))
+    chmod 777 "${LXD6_DIR}"
+
+    spawn_lxd 127.0.0.1:18467 "${LXD6_DIR}"
+
+    (
+    set -e
+    LXD_DIR=$LXD5_DIR
+    LXD_REMOTE_DIR=$LXD6_DIR
     # import busybox as a regular file-backed image
     ../scripts/lxd-images import busybox --alias testimage
 
-    export LXD_REMOTE_DIR=$(mktemp -d -p $(pwd))
-    chmod 777 "${LXD_REMOTE_DIR}"
-
-    spawn_lxd 127.0.0.1:18467 "${LXD_REMOTE_DIR}"
-
-    # swap env so 'lxc' will point at the new LXD
-    TEMPLXDDIR=$LXD_DIR
-    LXD_DIR=$LXD_REMOTE_DIR
-    LXD_REMOTE_DIR=$TEMPLXDDIR
+    LXD_DIR=$LXD6_DIR
+    LXD_REMOTE_DIR=$LXD5_DIR
 
     lxc config set core.lvm_vg_name "lxd_test_vg" || die "couldn't set vg_name"
     (echo y; sleep 3; echo foo) | lxc remote add testremote 127.0.0.1:18466
@@ -242,36 +285,48 @@ test_remote_launch_imports_lvm() {
     lvs --noheadings -o lv_attr lxd_test_vg/$testimage_sha | grep "^  V" || die "no lv named $testimage_sha or not a thin Vol."
 
     lxc list | grep remote-test | grep RUNNING || die "remote-test is not RUNNING"
-    lvs --noheadings -o pool_lv lxd_test_vg/remote-test | grep LXDPool || die "LV for remote-test not found or not in LXDPool"
+    lvs --noheadings -o pool_lv lxd_test_vg/remote--test | grep LXDPool || die "LV for remote-test not found or not in LXDPool"
     lxc stop remote-test --force || die "Couldn't stop remote-test"
     lxc delete remote-test
 
-    lvs lxd_test_vg/remote-test && die "remote-test LV is still there, should have been removed."
+    lvs lxd_test_vg/remote--test && die "remote--test LV is still there, should have been removed."
     lxc image delete $testimage_sha
     lvs lxd_test_vg/$testimage_sha && die "LV $testimage_sha is still there, should have been removed."
+    exit 0
+    )
 
-    do_kill_lxd `cat $LXD_DIR/lxd.pid`
-    do_kill_lxd `cat $LXD_REMOTE_DIR/lxd.pid`
-    wipe ${LXD_DIR}
-    wipe ${LXD_REMOTE_DIR}
-    LXD_DIR=${PREV_LXD_DIR}
+    do_kill_lxd `cat $LXD5_DIR/lxd.pid`
+    do_kill_lxd `cat $LXD6_DIR/lxd.pid`
+    wipe ${LXD5_DIR}
+    wipe ${LXD6_DIR}
 }
 
 test_init_with_missing_vg() {
-    PREV_LXD_DIR=$LXD_DIR
-    export LXD_DIR=$(mktemp -d -p $(pwd))
-    chmod 777 "${LXD_DIR}"
-    spawn_lxd 127.0.0.1:18451 "${LXD_DIR}"
+    export LXD5_DIR=$(mktemp -d -p $(pwd))
+    chmod 777 "${LXD5_DIR}"
+    spawn_lxd 127.0.0.1:18451 "${LXD5_DIR}"
 
+    (
+    set -e
+    LXD_DIR=$LXD5_DIR
     create_vg red_shirt_yeoman_vg
-
     lxc config set core.lvm_vg_name "red_shirt_yeoman_vg" || die "error setting core.lvm_vg_name config"
-    do_kill_lxd `cat $LXD_DIR/lxd.pid`
+    exit 0
+    )
+
+    do_kill_lxd `cat $LXD5_DIR/lxd.pid`
     cleanup_vg red_shirt_yeoman_vg
-    spawn_lxd 127.0.0.1:18451 "${LXD_DIR}"
+
+    spawn_lxd 127.0.0.1:18451 "${LXD5_DIR}"
+
+    (
+    set -e
+    LXD_DIR=$LXD5_DIR
     lxc config show | grep "red_shirt_yeoman_vg" || die "should show config even if it is broken"
     lxc config unset core.lvm_vg_name || die "should be able to un set config to un break"
-    do_kill_lxd `cat $LXD_DIR/lxd.pid`
-    wipe ${LXD_DIR}
-    LXD_DIR=${PREV_LXD_DIR}
+    exit 0
+    )
+
+    do_kill_lxd `cat $LXD5_DIR/lxd.pid`
+    wipe ${LXD5_DIR}
 }

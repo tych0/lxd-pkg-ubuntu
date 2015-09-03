@@ -129,6 +129,7 @@ type container interface {
 
 	StorageStart() error
 	StorageStop() error
+	StorageGet() storage
 
 	IsPrivileged() bool
 	IsRunning() bool
@@ -217,9 +218,6 @@ func containerLXDCreateAsCopy(d *Daemon, name string,
 		return nil, err
 	}
 
-	sourceContainer.StorageStart()
-	defer sourceContainer.StorageStop()
-
 	if err := c.Storage.ContainerCopy(c, sourceContainer); err != nil {
 		c.Delete()
 		return nil, err
@@ -232,12 +230,12 @@ func containerLXDCreateAsSnapshot(d *Daemon, name string,
 	args containerLXDArgs, sourceContainer container,
 	stateful bool) (container, error) {
 
-	// Create the container
 	c, err := containerLXDCreateInternal(d, name, args)
 	if err != nil {
 		return nil, err
 	}
 
+	c.Storage = sourceContainer.StorageGet()
 	if err := c.Storage.ContainerSnapshotCreate(c, sourceContainer); err != nil {
 		c.Delete()
 		return nil, err
@@ -278,6 +276,16 @@ func containerLXDCreateAsSnapshot(d *Daemon, name string,
 	return c, nil
 }
 
+func validContainerName(name string) error {
+	if strings.Contains(name, shared.SnapshotDelimiter) {
+		return fmt.Errorf(
+			"The character '%s' is reserved for snapshots.",
+			shared.SnapshotDelimiter)
+	}
+
+	return nil
+}
+
 func containerLXDCreateInternal(
 	d *Daemon, name string, args containerLXDArgs) (*containerLXD, error) {
 
@@ -287,11 +295,10 @@ func containerLXDCreateInternal(
 			"container":  name,
 			"isSnapshot": args.Ctype == cTypeSnapshot})
 
-	if args.Ctype != cTypeSnapshot &&
-		strings.Contains(name, shared.SnapshotDelimiter) {
-		return nil, fmt.Errorf(
-			"The character '%s' is reserved for snapshots.",
-			shared.SnapshotDelimiter)
+	if args.Ctype != cTypeSnapshot {
+		if err := validContainerName(name); err != nil {
+			return nil, err
+		}
 	}
 
 	path := containerPathGet(name, args.Ctype == cTypeSnapshot)
@@ -729,6 +736,10 @@ func (c *containerLXD) StorageStop() error {
 	return c.Storage.ContainerStop(c)
 }
 
+func (c *containerLXD) StorageGet() storage {
+	return c.Storage
+}
+
 func (c *containerLXD) Restore(sourceContainer container) error {
 	/*
 	 * restore steps:
@@ -758,9 +769,7 @@ func (c *containerLXD) Restore(sourceContainer container) error {
 	// Restore the FS.
 	// TODO: I switched the FS and config restore, think thats the correct way
 	// (pcdummy)
-	sourceContainer.StorageStart()
 	err := c.Storage.ContainerRestore(c, sourceContainer)
-	sourceContainer.StorageStop()
 
 	if err != nil {
 		shared.Log.Error("RESTORE => Restoring the filesystem failed",
@@ -827,11 +836,41 @@ func (c *containerLXD) Rename(newName string) error {
 		return fmt.Errorf("renaming of running container not allowed")
 	}
 
-	if err := c.Storage.ContainerRename(c, newName); err != nil {
-		return err
+	if c.IsSnapshot() {
+		if err := c.Storage.ContainerSnapshotRename(c, newName); err != nil {
+			return err
+		}
+	} else {
+		if err := c.Storage.ContainerRename(c, newName); err != nil {
+			return err
+		}
 	}
+
 	if err := dbContainerRename(c.daemon.db, c.NameGet(), newName); err != nil {
 		return err
+	}
+
+	results, err := dbContainerGetSnapshots(c.daemon.db, c.NameGet())
+	if err != nil {
+		return err
+	}
+
+	for _, sname := range results {
+		sc, err := containerLXDLoad(c.daemon, sname)
+		if err != nil {
+			shared.Log.Error(
+				"containerDeleteSnapshots: Failed to load the snapshotcontainer",
+				log.Ctx{"container": c.NameGet(), "snapshot": sname})
+
+			continue
+		}
+		baseSnapName := filepath.Base(sname)
+		newSnapshotName := newName + shared.SnapshotDelimiter + baseSnapName
+		if err := sc.Rename(newSnapshotName); err != nil {
+			shared.Log.Error(
+				"containerDeleteSnapshots: Failed to rename a snapshotcontainer",
+				log.Ctx{"container": c.NameGet(), "snapshot": sname, "err": err})
+		}
 	}
 
 	c.name = newName
@@ -839,8 +878,6 @@ func (c *containerLXD) Rename(newName string) error {
 	// Recreate the LX Container
 	c.c = nil
 	c.init()
-
-	// TODO: We should rename its snapshots here.
 
 	return nil
 }
@@ -1306,7 +1343,7 @@ func (c *containerLXD) AttachMount(m shared.Device) error {
 		return err
 	}
 
-	mntsrc := filepath.Join("/.lxdmounts", filepath.Base(tmpMount))
+	mntsrc := filepath.Join("/dev/.lxd-mounts", filepath.Base(tmpMount))
 	// finally we need to move-mount this in the container
 	pidstr := fmt.Sprintf("%d", pid)
 	err = exec.Command(os.Args[0], "forkmount", pidstr, mntsrc, m["path"]).Run()
@@ -1401,14 +1438,6 @@ func (c *containerLXD) applyProfile(p string) error {
 	for _, r := range result {
 		k = r[0].(string)
 		v = r[1].(string)
-
-		shared.Debugf("Applying %s: %s", k, v)
-		if k == "raw.lxc" {
-			if _, ok := c.config["raw.lxc"]; ok {
-				shared.Debugf("Ignoring overridden raw.lxc from profile '%s'", p)
-				continue
-			}
-		}
 
 		config[k] = v
 	}
@@ -1735,7 +1764,7 @@ func (c *containerLXD) mkdirAllContainerRoot(path string, perm os.FileMode) erro
 
 func (c *containerLXD) mountShared() error {
 	source := shared.VarPath("shmounts", c.NameGet())
-	entry := fmt.Sprintf("%s .lxdmounts none bind,create=dir 0 0", source)
+	entry := fmt.Sprintf("%s dev/.lxd-mounts none bind,create=dir 0 0", source)
 	if !shared.PathExists(source) {
 		if err := c.mkdirAllContainerRoot(source, 0755); err != nil {
 			return err

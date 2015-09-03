@@ -15,8 +15,8 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/lxc/lxd"
-	"github.com/lxc/lxd/internal/gnuflag"
 	"github.com/lxc/lxd/shared"
+	"github.com/lxc/lxd/shared/gnuflag"
 )
 
 type imageCmd struct{}
@@ -39,7 +39,7 @@ func (c *imageCmd) usage() string {
 			"\n" +
 			"lxc image import <tarball> [rootfs tarball] [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]\n" +
 			"\n" +
-			"lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-alias]\n" +
+			"lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-alias] [--public]\n" +
 			"lxc image delete [remote:]<image>\n" +
 			"lxc image edit [remote:]<image>\n" +
 			"lxc image export [remote:]<image>\n" +
@@ -52,9 +52,12 @@ func (c *imageCmd) usage() string {
 			"\n" +
 			"lxc image alias create <alias> <target>\n" +
 			"lxc image alias delete <alias>\n" +
-			"lxc remote add images images.linuxcontainers.org\n" +
-			"lxc image alias list images:\n" +
-			"create, delete, list image aliases\n")
+			"lxc image alias list [remote:]\n" +
+			"\n" +
+			"Create, delete, list image aliases. Example:\n" +
+			"\n" +
+			"lxc remote add store2 images.linuxcontainers.org\n" +
+			"lxc image alias list store2:\n")
 }
 
 type aliasList []string

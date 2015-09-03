@@ -1041,7 +1041,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 
 	source := shared.Jmap{"type": "image"}
 
-	if imgremote != "" {
+	if imgremote != c.name {
 		source["type"] = "image"
 		source["mode"] = "pull"
 		tmpremote, err = NewClient(&c.config, imgremote)
@@ -1119,7 +1119,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 
 	var resp *Response
 
-	if imgremote != "" {
+	if imgremote != c.name {
 		var addresses []string
 		addresses, err = tmpremote.Addresses()
 		if err != nil {
@@ -1341,11 +1341,10 @@ func (c *Client) ServerStatus() (*shared.ServerState, error) {
 	return &ss, nil
 }
 
-func (c *Client) ContainerStatus(name string, showLog bool) (*shared.ContainerState, error) {
+func (c *Client) ContainerStatus(name string) (*shared.ContainerState, error) {
 	ct := shared.ContainerState{}
-	query := url.Values{"log": []string{fmt.Sprintf("%v", showLog)}}
 
-	resp, err := c.get(fmt.Sprintf("containers/%s", name) + "?" + query.Encode())
+	resp, err := c.get(fmt.Sprintf("containers/%s", name))
 	if err != nil {
 		return nil, err
 	}
@@ -1355,6 +1354,16 @@ func (c *Client) ContainerStatus(name string, showLog bool) (*shared.ContainerSt
 	}
 
 	return &ct, nil
+}
+
+func (c *Client) GetLog(container string, log string) (io.Reader, error) {
+	uri := c.url(shared.APIVersion, "containers", container, "logs", log)
+	resp, err := c.getRaw(uri)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
 }
 
 func (c *Client) ProfileConfig(name string) (*shared.ProfileConfig, error) {
@@ -1433,8 +1442,20 @@ func (c *Client) MigrateFrom(name string, operation string, secrets map[string]s
 }
 
 func (c *Client) Rename(name string, newName string) (*Response, error) {
-	body := shared.Jmap{"name": newName}
-	return c.post(fmt.Sprintf("containers/%s", name), body, Async)
+	oldNameParts := strings.SplitN(name, "/", 2)
+	newNameParts := strings.SplitN(newName, "/", 2)
+	if len(oldNameParts) != len(newNameParts) {
+		return nil, fmt.Errorf("Attempting to rename container to snapshot or vice versa.")
+	}
+	if len(oldNameParts) == 1 {
+		body := shared.Jmap{"name": newName}
+		return c.post(fmt.Sprintf("containers/%s", name), body, Async)
+	}
+	if oldNameParts[0] != newNameParts[0] {
+		return nil, fmt.Errorf("Attempting to rename snapshot of one container into a snapshot of another container.")
+	}
+	body := shared.Jmap{"name": newNameParts[1]}
+	return c.post(fmt.Sprintf("containers/%s/snapshots/%s", oldNameParts[0], oldNameParts[1]), body, Async)
 }
 
 /* Wait for an operation */
@@ -1537,7 +1558,7 @@ func (c *Client) SetServerConfig(key string, value string) (*Response, error) {
  * return string array representing a container's full configuration
  */
 func (c *Client) GetContainerConfig(container string) ([]string, error) {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	var resp []string
 	if err != nil {
 		return resp, err
@@ -1556,7 +1577,7 @@ func (c *Client) GetContainerConfig(container string) ([]string, error) {
 }
 
 func (c *Client) SetContainerConfig(container, key, value string) error {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	if err != nil {
 		return err
 	}
@@ -1677,7 +1698,7 @@ func (c *Client) ListProfiles() ([]string, error) {
 }
 
 func (c *Client) ApplyProfile(container, profile string) (*Response, error) {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	if err != nil {
 		return nil, err
 	}
@@ -1688,7 +1709,7 @@ func (c *Client) ApplyProfile(container, profile string) (*Response, error) {
 }
 
 func (c *Client) ContainerDeviceDelete(container, devname string) (*Response, error) {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	if err != nil {
 		return nil, err
 	}
@@ -1700,7 +1721,7 @@ func (c *Client) ContainerDeviceDelete(container, devname string) (*Response, er
 }
 
 func (c *Client) ContainerDeviceAdd(container, devname, devtype string, props []string) (*Response, error) {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	if err != nil {
 		return nil, err
 	}
@@ -1729,7 +1750,7 @@ func (c *Client) ContainerDeviceAdd(container, devname, devtype string, props []
 }
 
 func (c *Client) ContainerListDevices(container string) ([]string, error) {
-	st, err := c.ContainerStatus(container, false)
+	st, err := c.ContainerStatus(container)
 	if err != nil {
 		return nil, err
 	}

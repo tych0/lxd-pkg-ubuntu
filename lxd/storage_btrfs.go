@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -28,6 +29,16 @@ func (s *storageBtrfs) Init(config map[string]interface{}) (storage, error) {
 	out, err := exec.LookPath("btrfs")
 	if err != nil || len(out) == 0 {
 		return s, fmt.Errorf("The 'btrfs' tool isn't available")
+	}
+
+	output, err := exec.Command("btrfs", "version").CombinedOutput()
+	if err != nil {
+		return s, fmt.Errorf("The 'btrfs' tool isn't working properly")
+	}
+
+	count, err := fmt.Sscanf(strings.SplitN(string(output), " ", 2)[1], "v%s\n", &s.sTypeVersion)
+	if err != nil || count != 1 {
+		return s, fmt.Errorf("The 'btrfs' tool isn't working properly")
 	}
 
 	return s, nil
@@ -71,7 +82,7 @@ func (s *storageBtrfs) ContainerCreateFromImage(
 	}
 
 	// Now make a snapshot of the image subvol
-	err := s.subvolSnapshot(imageSubvol, container.PathGet(""), false)
+	err := s.subvolsSnapshot(imageSubvol, container.PathGet(""), false)
 	if err != nil {
 		return err
 	}
@@ -95,7 +106,7 @@ func (s *storageBtrfs) ContainerDelete(container container) error {
 
 	// First remove the subvol (if it was one).
 	if s.isSubvolume(cPath) {
-		if err := s.subvolDelete(cPath); err != nil {
+		if err := s.subvolsDelete(cPath); err != nil {
 			return err
 		}
 	}
@@ -116,7 +127,8 @@ func (s *storageBtrfs) ContainerCopy(container container, sourceContainer contai
 	dpath := container.PathGet("")
 
 	if s.isSubvolume(subvol) {
-		err := s.subvolSnapshot(subvol, dpath, false)
+		// Snapshot the sourcecontainer
+		err := s.subvolsSnapshot(subvol, dpath, false)
 		if err != nil {
 			return err
 		}
@@ -135,12 +147,13 @@ func (s *storageBtrfs) ContainerCopy(container container, sourceContainer contai
 		if err != nil {
 			s.ContainerDelete(container)
 
-			s.log.Error("ContainerCopy: rsync failed", log.Ctx{"output": output})
-			return fmt.Errorf("rsync failed: %s", output)
+			s.log.Error("ContainerCopy: rsync failed", log.Ctx{"output": string(output)})
+			return fmt.Errorf("rsync failed: %s", string(output))
 		}
 	}
 
 	if err := s.setUnprivUserAcl(sourceContainer, dpath); err != nil {
+		s.ContainerDelete(container)
 		return err
 	}
 
@@ -185,7 +198,7 @@ func (s *storageBtrfs) ContainerRestore(
 	var failure error
 	if s.isSubvolume(sourceSubVol) {
 		// Restore using btrfs snapshots.
-		err := s.subvolSnapshot(sourceSubVol, targetSubVol, false)
+		err := s.subvolsSnapshot(sourceSubVol, targetSubVol, false)
 		if err != nil {
 			failure = err
 		}
@@ -199,7 +212,7 @@ func (s *storageBtrfs) ContainerRestore(
 			if err != nil {
 				s.log.Error(
 					"ContainerRestore: rsync failed",
-					log.Ctx{"output": output})
+					log.Ctx{"output": string(output)})
 
 				failure = err
 			}
@@ -236,9 +249,9 @@ func (s *storageBtrfs) ContainerSnapshotCreate(
 
 	if s.isSubvolume(subvol) {
 		// Create a readonly snapshot of the source.
-		err := s.subvolSnapshot(subvol, dpath, true)
+		err := s.subvolsSnapshot(subvol, dpath, true)
 		if err != nil {
-			s.ContainerDelete(snapshotContainer)
+			s.ContainerSnapshotDelete(snapshotContainer)
 			return err
 		}
 	} else {
@@ -249,12 +262,12 @@ func (s *storageBtrfs) ContainerSnapshotCreate(
 			subvol,
 			dpath)
 		if err != nil {
-			s.ContainerDelete(snapshotContainer)
+			s.ContainerSnapshotDelete(snapshotContainer)
 
 			s.log.Error(
 				"ContainerSnapshotCreate: rsync failed",
-				log.Ctx{"output": output})
-			return fmt.Errorf("rsync failed: %s", output)
+				log.Ctx{"output": string(output)})
+			return fmt.Errorf("rsync failed: %s", string(output))
 		}
 	}
 
@@ -283,22 +296,27 @@ func (s *storageBtrfs) ContainerSnapshotRename(
 	newPath := snapshotContainer.PathGet(newName)
 
 	// Create the new parent.
-	if strings.Contains(snapshotContainer.NameGet(), "/") {
-		if !shared.PathExists(filepath.Dir(newPath)) {
-			os.MkdirAll(filepath.Dir(newPath), 0700)
-		}
+	if !shared.PathExists(filepath.Dir(newPath)) {
+		os.MkdirAll(filepath.Dir(newPath), 0700)
 	}
 
 	// Now rename the snapshot.
-	if err := os.Rename(oldPath, newPath); err != nil {
-		return err
+	if !s.isSubvolume(oldPath) {
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+	} else {
+		if err := s.subvolsSnapshot(oldPath, newPath, true); err != nil {
+			return err
+		}
+		if err := s.subvolsDelete(oldPath); err != nil {
+			return err
+		}
 	}
 
 	// Remove the old parent (on container rename) if its empty.
-	if strings.Contains(snapshotContainer.NameGet(), "/") {
-		if ok, _ := shared.PathIsEmpty(filepath.Dir(oldPath)); ok {
-			os.Remove(filepath.Dir(oldPath))
-		}
+	if ok, _ := shared.PathIsEmpty(filepath.Dir(oldPath)); ok {
+		os.Remove(filepath.Dir(oldPath))
 	}
 
 	return nil
@@ -342,12 +360,12 @@ func (s *storageBtrfs) subvolCreate(subvol string) error {
 	if err != nil {
 		s.log.Debug(
 			"subvolume create failed",
-			log.Ctx{"subvol": subvol, "output": output},
+			log.Ctx{"subvol": subvol, "output": string(output)},
 		)
 		return fmt.Errorf(
 			"btrfs subvolume create failed, subvol=%s, output%s",
 			subvol,
-			output,
+			string(output),
 		)
 	}
 
@@ -365,9 +383,39 @@ func (s *storageBtrfs) subvolDelete(subvol string) error {
 	if err != nil {
 		s.log.Warn(
 			"subvolume delete failed",
-			log.Ctx{"subvol": subvol, "output": output},
+			log.Ctx{"subvol": subvol, "output": string(output)},
 		)
 	}
+	return nil
+}
+
+// subvolsDelete is the recursive variant on subvolDelete,
+// it first deletes subvolumes of the subvolume and then the
+// subvolume itself.
+func (s *storageBtrfs) subvolsDelete(subvol string) error {
+	// Delete subsubvols.
+	subsubvols, err := s.getSubVolumes(subvol)
+	if err != nil {
+		return err
+	}
+
+	for _, subsubvol := range subsubvols {
+		s.log.Debug(
+			"Deleting subsubvol",
+			log.Ctx{
+				"subvol":    subvol,
+				"subsubvol": subsubvol})
+
+		if err := s.subvolDelete(path.Join(subvol, subsubvol)); err != nil {
+			return err
+		}
+	}
+
+	// Delete the subvol itself
+	if err := s.subvolDelete(subvol); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -375,7 +423,9 @@ func (s *storageBtrfs) subvolDelete(subvol string) error {
  * subvolSnapshot creates a snapshot of "source" to "dest"
  * the result will be readonly if "readonly" is True.
  */
-func (s *storageBtrfs) subvolSnapshot(source string, dest string, readonly bool) error {
+func (s *storageBtrfs) subvolSnapshot(
+	source string, dest string, readonly bool) error {
+
 	parentDestPath := filepath.Dir(dest)
 	if !shared.PathExists(parentDestPath) {
 		if err := os.MkdirAll(parentDestPath, 0700); err != nil {
@@ -383,10 +433,16 @@ func (s *storageBtrfs) subvolSnapshot(source string, dest string, readonly bool)
 		}
 	}
 
-	var out []byte
+	if shared.PathExists(dest) {
+		if err := os.Remove(dest); err != nil {
+			return err
+		}
+	}
+
+	var output []byte
 	var err error
 	if readonly {
-		out, err = exec.Command(
+		output, err = exec.Command(
 			"btrfs",
 			"subvolume",
 			"snapshot",
@@ -394,7 +450,7 @@ func (s *storageBtrfs) subvolSnapshot(source string, dest string, readonly bool)
 			source,
 			dest).CombinedOutput()
 	} else {
-		out, err = exec.Command(
+		output, err = exec.Command(
 			"btrfs",
 			"subvolume",
 			"snapshot",
@@ -404,17 +460,55 @@ func (s *storageBtrfs) subvolSnapshot(source string, dest string, readonly bool)
 	if err != nil {
 		s.log.Error(
 			"subvolume snapshot failed",
-			log.Ctx{"source": source, "dest": dest, "output": out},
+			log.Ctx{"source": source, "dest": dest, "output": string(output)},
 		)
 		return fmt.Errorf(
 			"subvolume snapshot failed, source=%s, dest=%s, output=%s",
 			source,
 			dest,
-			out,
+			string(output),
 		)
 	}
 
 	return err
+}
+
+func (s *storageBtrfs) subvolsSnapshot(
+	source string, dest string, readonly bool) error {
+
+	// Get a list of subvolumes of the root
+	subsubvols, err := s.getSubVolumes(source)
+	if err != nil {
+		return err
+	}
+
+	if len(subsubvols) > 0 && readonly {
+		// A root with subvolumes can never be readonly,
+		// also don't make subvolumes readonly.
+		readonly = false
+
+		s.log.Warn(
+			"Subvolumes detected, ignoring ro flag",
+			log.Ctx{"source": source, "dest": dest})
+	}
+
+	// First snapshot the root
+	if err := s.subvolSnapshot(source, dest, readonly); err != nil {
+		return err
+	}
+
+	// Now snapshot all subvolumes of the root.
+	for _, subsubvol := range subsubvols {
+		if err := s.subvolSnapshot(
+			path.Join(source, subsubvol),
+			path.Join(dest, subsubvol),
+			readonly); err != nil {
+
+			return err
+		}
+	}
+
+	return nil
 }
 
 /*
@@ -422,14 +516,69 @@ func (s *storageBtrfs) subvolSnapshot(source string, dest string, readonly bool)
  * else false.
  */
 func (s *storageBtrfs) isSubvolume(subvolPath string) bool {
-	out, err := exec.Command(
+	output, err := exec.Command(
 		"btrfs",
 		"subvolume",
 		"show",
 		subvolPath).CombinedOutput()
-	if err != nil || strings.HasPrefix(string(out), "ERROR: ") {
+	if err != nil || strings.HasPrefix(string(output), "ERROR: ") {
 		return false
 	}
 
 	return true
+}
+
+// getSubVolumes returns a list of relative subvolume paths of "path".
+func (s *storageBtrfs) getSubVolumes(path string) ([]string, error) {
+	out, err := exec.Command(
+		"btrfs",
+		"inspect-internal",
+		"rootid",
+		path).CombinedOutput()
+	if err != nil {
+		return []string{}, fmt.Errorf(
+			"Unable to get btrfs rootid, path='%s', err='%s'",
+			path,
+			err)
+	}
+	rootid := strings.TrimRight(string(out), "\n")
+
+	out, err = exec.Command(
+		"btrfs",
+		"inspect-internal",
+		"subvolid-resolve",
+		rootid, path).CombinedOutput()
+	if err != nil {
+		return []string{}, fmt.Errorf(
+			"Unable to resolve btrfs rootid, path='%s', err='%s'",
+			path,
+			err)
+	}
+	basePath := strings.TrimRight(string(out), "\n")
+
+	out, err = exec.Command(
+		"btrfs",
+		"subvolume",
+		"list",
+		"-o",
+		path).CombinedOutput()
+	if err != nil {
+		return []string{}, fmt.Errorf(
+			"Unable to list subvolumes, path='%s', err='%s'",
+			path,
+			err)
+	}
+
+	result := []string{}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		cols := strings.Fields(line)
+		result = append(result, cols[8][len(basePath):])
+	}
+
+	return result, nil
 }

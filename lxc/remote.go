@@ -5,19 +5,21 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/chai2010/gettext-go/gettext"
 	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/lxc/lxd"
-	"github.com/lxc/lxd/internal/gnuflag"
 	"github.com/lxc/lxd/shared"
+	"github.com/lxc/lxd/shared/gnuflag"
 )
 
 type remoteCmd struct {
 	httpAddr   string
 	acceptCert bool
 	password   string
+	public     bool
 }
 
 func (c *remoteCmd) showByDefault() bool {
@@ -40,13 +42,15 @@ func (c *remoteCmd) usage() string {
 func (c *remoteCmd) flags() {
 	gnuflag.BoolVar(&c.acceptCert, "accept-certificate", false, gettext.Gettext("Accept certificate"))
 	gnuflag.StringVar(&c.password, "password", "", gettext.Gettext("Remote admin password"))
+	gnuflag.BoolVar(&c.public, "public", false, gettext.Gettext("Public image server"))
 }
 
-func addServer(config *lxd.Config, server string, addr string, acceptCert bool, password string) error {
+func addServer(config *lxd.Config, server string, addr string, acceptCert bool, password string, public bool) error {
 	var r_scheme string
 	var r_host string
 	var r_port string
 
+	/* Complex remote URL parsing */
 	remote_url, err := url.Parse(addr)
 	if err != nil {
 		return err
@@ -93,6 +97,10 @@ func addServer(config *lxd.Config, server string, addr string, acceptCert bool, 
 		r_port = ""
 	}
 
+	if strings.Contains(r_host, ":") && !strings.HasPrefix(r_host, "[") {
+		r_host = fmt.Sprintf("[%s]", r_host)
+	}
+
 	if r_port != "" {
 		addr = r_scheme + "://" + r_host + ":" + r_port
 	} else {
@@ -103,7 +111,8 @@ func addServer(config *lxd.Config, server string, addr string, acceptCert bool, 
 		config.Remotes = make(map[string]lxd.RemoteConfig)
 	}
 
-	config.Remotes[server] = lxd.RemoteConfig{Addr: addr}
+	/* Actually add the remote */
+	config.Remotes[server] = lxd.RemoteConfig{Addr: addr, Public: public}
 
 	remote := config.ParseRemote(server)
 	c, err := lxd.NewClient(config, remote)
@@ -120,6 +129,14 @@ func addServer(config *lxd.Config, server string, addr string, acceptCert bool, 
 	err = c.UserAuthServerCert(host, acceptCert)
 	if err != nil {
 		return err
+	}
+
+	if public {
+		if err := c.Finger(); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
 	if c.AmTrusted() {
@@ -177,7 +194,7 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 			return fmt.Errorf(gettext.Gettext("remote %s exists as <%s>"), args[1], rc.Addr)
 		}
 
-		err := addServer(config, args[1], args[2], c.acceptCert, c.password)
+		err := addServer(config, args[1], args[2], c.acceptCert, c.password, c.public)
 		if err != nil {
 			delete(config.Remotes, args[1])
 			return err
@@ -202,7 +219,11 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 
 	case "list":
 		for name, rc := range config.Remotes {
-			fmt.Println(fmt.Sprintf("%s <%s>", name, rc.Addr))
+			if rc.Public {
+				fmt.Println(fmt.Sprintf("%s <%s> [PUBLIC]", name, rc.Addr))
+			} else {
+				fmt.Println(fmt.Sprintf("%s <%s>", name, rc.Addr))
+			}
 		}
 		/* Here, we don't need to save since we didn't actually modify
 		 * anything, so just return. */
