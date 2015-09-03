@@ -38,9 +38,20 @@ Depends: acl,
          ${misc:Depends},
          ${shlibs:Depends}
 Recommends: lxd-client
-Suggests: criu
+Suggests: criu, lxd-tools
 Description: Container hypervisor based on LXC - daemon
  LXD offers a REST API to remotely manage containers over the network,
  using an image based workflow and with support for live migration.
  .
  This package contains the LXD daemon.
+
+Package: lxd-tools
+Architecture: any
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Description: Container hypervisor based on LXC - extra tools
+ LXD offers a REST API to remotely manage containers over the network,
+ using an image based workflow and with support for live migration.
+ .
+ This package contains extra tools provided with LXD.
+  - fuidshift - A tool to map/unmap filesystem uids/gids

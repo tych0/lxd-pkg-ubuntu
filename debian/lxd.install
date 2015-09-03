@@ -1,5 +1,7 @@
 usr/bin/lxd
 usr/bin/lxd-images
+usr/lib/lxd/lxd-bridge
+usr/bin/lxd-bridge-proxy usr/lib/lxd/
 usr/share/man/man1/lxd-images.1
 usr/share/man/man1/lxd.1
 debian/*.service lib/systemd/system/
