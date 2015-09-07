@@ -1,3 +1,10 @@
+lxd (0.17-0ubuntu2) wily; urgency=medium
+
+  * Add XS-Testsuite to debian/control so it's consistently set no
+    matter what Ubuntu version was used to build the source package.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Mon, 07 Sep 2015 01:32:17 -0400
+
 lxd (0.17-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.17)
