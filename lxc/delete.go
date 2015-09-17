@@ -17,12 +17,11 @@ func (c *deleteCmd) showByDefault() bool {
 
 func (c *deleteCmd) usage() string {
 	return gettext.Gettext(
-		"Delete containers or container snapshots.\n" +
-			"\n" +
-			"lxc delete [remote:]<container>[/<snapshot>] [remote:][<container>[/<snapshot>]...]\n" +
-			"\n" +
-			"Destroy containers or snapshots with any attached data (configuration,\n" +
-			"snapshots, ...).\n")
+		`Delete containers or container snapshots.
+
+lxc delete [remote:]<container>[/<snapshot>] [remote:][<container>[/<snapshot>]...]
+
+Destroy containers or snapshots with any attached data (configuration, snapshots, ...).`)
 }
 
 func (c *deleteCmd) flags() {}
@@ -56,7 +55,7 @@ func (c *deleteCmd) run(config *lxd.Config, args []string) error {
 			return doDelete(d, name)
 		}
 
-		if ct.State() != shared.STOPPED {
+		if ct.Status.StatusCode != shared.Stopped {
 			resp, err := d.Action(name, shared.Stop, -1, true)
 			if err != nil {
 				return err

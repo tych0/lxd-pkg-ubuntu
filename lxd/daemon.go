@@ -37,6 +37,11 @@ const (
 	pwHashBytes = 64
 )
 
+type Socket struct {
+	Socket      net.Listener
+	CloseOnExit bool
+}
+
 // A Daemon can respond to requests from a shared client.
 type Daemon struct {
 	architectures []int
@@ -53,7 +58,7 @@ type Daemon struct {
 
 	Storage storage
 
-	Sockets []net.Listener
+	Sockets []Socket
 
 	tlsconfig *tls.Config
 
@@ -161,7 +166,7 @@ func (d *Daemon) httpGetFile(url string) (*http.Response, error) {
 func readMyCert() (string, string, error) {
 	certf := shared.VarPath("server.crt")
 	keyf := shared.VarPath("server.key")
-	shared.Log.Info("Looking for existing certificates:", log.Ctx{"cert": certf, "key": keyf})
+	shared.Log.Info("Looking for existing certificates", log.Ctx{"cert": certf, "key": keyf})
 
 	err := shared.FindOrGenCert(certf, keyf)
 
@@ -295,7 +300,7 @@ func (d *Daemon) createCmd(version string, c Command) {
 }
 
 func (d *Daemon) SetupStorageDriver() error {
-	vgName, err := d.ConfigValueGet("core.lvm_vg_name")
+	vgName, err := d.ConfigValueGet("storage.lvm_vg_name")
 	if err != nil {
 		return fmt.Errorf("Couldn't read config: %s", err)
 	}
@@ -402,7 +407,7 @@ func (d *Daemon) ListenAddresses() ([]string, error) {
 }
 
 func (d *Daemon) UpdateHTTPsPort(oldAddress string, newAddress string) error {
-	var sockets []net.Listener
+	var sockets []Socket
 
 	if oldAddress != "" {
 		_, _, err := net.SplitHostPort(oldAddress)
@@ -411,8 +416,8 @@ func (d *Daemon) UpdateHTTPsPort(oldAddress string, newAddress string) error {
 		}
 
 		for _, socket := range d.Sockets {
-			if socket.Addr().String() == oldAddress {
-				socket.Close()
+			if socket.Socket.Addr().String() == oldAddress {
+				socket.Socket.Close()
 			} else {
 				sockets = append(sockets, socket)
 			}
@@ -438,7 +443,7 @@ func (d *Daemon) UpdateHTTPsPort(oldAddress string, newAddress string) error {
 		}
 
 		d.tomb.Go(func() error { return http.Serve(tcpl, d.mux) })
-		sockets = append(sockets, tcpl)
+		sockets = append(sockets, Socket{Socket: tcpl, CloseOnExit: true})
 	}
 
 	d.Sockets = sockets
@@ -446,10 +451,10 @@ func (d *Daemon) UpdateHTTPsPort(oldAddress string, newAddress string) error {
 }
 
 func (d *Daemon) pruneExpiredImages() {
-	shared.Debugf("Pruning expired images\n")
+	shared.Debugf("Pruning expired images")
 	expiry, err := dbImageExpiryGet(d.db)
 	if err != nil { // no expiry
-		shared.Debugf("Failed getting the cached image expiry timeout\n")
+		shared.Debugf("Failed getting the cached image expiry timeout")
 		return
 	}
 
@@ -461,17 +466,17 @@ SELECT fingerprint FROM images WHERE cached=1 AND last_use_date<=strftime('%s', 
 
 	result, err := dbQueryScan(d.db, q, inargs, outfmt)
 	if err != nil {
-		shared.Debugf("Error making cache expiry query: %s\n", err)
+		shared.Debugf("Error making cache expiry query: %s", err)
 		return
 	}
-	shared.Debugf("Found %d expired images\n", len(result))
+	shared.Debugf("Found %d expired images", len(result))
 
 	for _, r := range result {
 		if err := doDeleteImage(d, r[0].(string)); err != nil {
-			shared.Debugf("Error deleting image: %s\n", err)
+			shared.Debugf("Error deleting image: %s", err)
 		}
 	}
-	shared.Debugf("Done pruning expired images\n")
+	shared.Debugf("Done pruning expired images")
 }
 
 // StartDaemon starts the shared daemon with the provided configuration.
@@ -561,8 +566,8 @@ func (d *Daemon) Init() error {
 	/* Read the uid/gid allocation */
 	d.IdmapSet, err = shared.DefaultIdmapSet()
 	if err != nil {
-		shared.Log.Warn("error reading idmap", log.Ctx{"err": err.Error()})
-		shared.Log.Warn("operations requiring idmap will not be available")
+		shared.Log.Warn("Error reading idmap", log.Ctx{"err": err.Error()})
+		shared.Log.Warn("Operations requiring idmap will not be available")
 	} else {
 		shared.Log.Info("Default uid/gid map:")
 		for _, lxcmap := range d.IdmapSet.ToLxcString() {
@@ -668,17 +673,17 @@ func (d *Daemon) Init() error {
 		return err
 	}
 
-	var sockets []net.Listener
+	var sockets []Socket
 
 	if len(listeners) > 0 {
 		shared.Log.Info("LXD is socket activated")
 
 		for _, listener := range listeners {
 			if shared.PathExists(listener.Addr().String()) {
-				sockets = append(sockets, listener)
+				sockets = append(sockets, Socket{Socket: listener, CloseOnExit: false})
 			} else {
 				tlsListener := tls.NewListener(listener, tlsConfig)
-				sockets = append(sockets, tlsListener)
+				sockets = append(sockets, Socket{Socket: tlsListener, CloseOnExit: false})
 			}
 		}
 	} else {
@@ -725,7 +730,7 @@ func (d *Daemon) Init() error {
 			return err
 		}
 
-		sockets = append(sockets, unixl)
+		sockets = append(sockets, Socket{Socket: unixl, CloseOnExit: true})
 	}
 
 	listenAddr, err := d.ConfigValueGet("core.https_address")
@@ -744,21 +749,21 @@ func (d *Daemon) Init() error {
 			return fmt.Errorf("cannot listen on https socket: %v", err)
 		}
 
-		sockets = append(sockets, tcpl)
+		sockets = append(sockets, Socket{Socket: tcpl, CloseOnExit: true})
 	}
 
 	if !d.IsMock {
 		d.Sockets = sockets
 	} else {
-		d.Sockets = []net.Listener{}
+		d.Sockets = []Socket{}
 	}
 
 	d.tomb.Go(func() error {
 		shared.Log.Info("REST API daemon:")
 		for _, socket := range d.Sockets {
-			shared.Log.Info(" - binding socket", log.Ctx{"socket": socket.Addr()})
+			shared.Log.Info(" - binding socket", log.Ctx{"socket": socket.Socket.Addr()})
 			current_socket := socket
-			d.tomb.Go(func() error { return http.Serve(current_socket, d.mux) })
+			d.tomb.Go(func() error { return http.Serve(current_socket.Socket, d.mux) })
 		}
 
 		d.tomb.Go(func() error {
@@ -808,15 +813,22 @@ var errStop = fmt.Errorf("requested stop")
 
 // Stop stops the shared daemon.
 func (d *Daemon) Stop() error {
+	forceStop := false
+
 	d.tomb.Kill(errStop)
+	shared.Log.Info("Stopping REST API handler:")
 	for _, socket := range d.Sockets {
-		socket.Close()
+		if socket.CloseOnExit {
+			shared.Log.Info(" - closing socket", log.Ctx{"socket": socket.Socket.Addr()})
+			socket.Socket.Close()
+		} else {
+			shared.Log.Info(" - skipping socket-activated socket", log.Ctx{"socket": socket.Socket.Addr()})
+			forceStop = true
+		}
 	}
 
 	if n, err := d.numRunningContainers(); err != nil || n == 0 {
-		shared.Log.Debug(
-			"Unmounting shmounts",
-			log.Ctx{"err": err, "n": n})
+		shared.Log.Debug("Unmounting shmounts")
 
 		syscall.Unmount(shared.VarPath("shmounts"), syscall.MNT_DETACH)
 		os.RemoveAll(shared.VarPath("shmounts"))
@@ -824,19 +836,22 @@ func (d *Daemon) Stop() error {
 		shared.Debugf("Not unmounting shmounts (containers are still running)")
 	}
 
+	shared.Log.Debug("Closing the database")
 	d.db.Close()
 
+	shared.Log.Debug("Stopping /dev/lxd handler")
 	d.devlxd.Close()
 
-	if !d.IsMock {
-		err := d.tomb.Wait()
-		if err == errStop {
-			return nil
-		}
-		return err
+	if d.IsMock || forceStop {
+		return nil
 	}
 
-	return nil
+	err := d.tomb.Wait()
+	if err == errStop {
+		return nil
+	}
+
+	return err
 }
 
 // ConfigKeyIsValid returns if the given key is a known config value.
@@ -846,9 +861,9 @@ func (d *Daemon) ConfigKeyIsValid(key string) bool {
 		return true
 	case "core.trust_password":
 		return true
-	case "core.lvm_vg_name":
+	case "storage.lvm_vg_name":
 		return true
-	case "core.lvm_thinpool_name":
+	case "storage.lvm_thinpool_name":
 		return true
 	case "images.remote_cache_expiry":
 		return true
@@ -946,6 +961,11 @@ func (d *Daemon) PasswordCheck(password string) bool {
 		return false
 	}
 
+	// No password set
+	if value == "" {
+		return false
+	}
+
 	buff, err := hex.DecodeString(value)
 	if err != nil {
 		shared.Log.Error("hex decode failed", log.Ctx{"err": err})
@@ -955,7 +975,7 @@ func (d *Daemon) PasswordCheck(password string) bool {
 	salt := buff[0:pwSaltBytes]
 	hash, err := scrypt.Key([]byte(password), salt, 1<<14, 8, 1, pwHashBytes)
 	if err != nil {
-		shared.Log.Error("failed to create hash to check", log.Ctx{"err": err})
+		shared.Log.Error("Failed to create hash to check", log.Ctx{"err": err})
 		return false
 	}
 	if !bytes.Equal(hash, buff[pwSaltBytes:]) {

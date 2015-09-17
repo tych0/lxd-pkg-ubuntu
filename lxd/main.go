@@ -11,28 +11,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lxc/lxd/lxd/migration"
+	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
 	"github.com/lxc/lxd/shared/gnuflag"
 )
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-var verbose = gnuflag.Bool("v", false, "Enables verbose mode.")
-var syslogFlag = gnuflag.Bool("syslog", false, "Enables syslog logging.")
-var logfile = gnuflag.String("logfile", "", "Logfile to log to (e.g., /var/log/lxd/lxd.log).")
+var cpuProfile = gnuflag.String("cpuprofile", "", "Enable cpu profiling into the specified file.")
 var debug = gnuflag.Bool("debug", false, "Enables debug mode.")
 var group = gnuflag.String("group", "", "Group which owns the shared socket.")
 var help = gnuflag.Bool("help", false, "Print this help message.")
-var version = gnuflag.Bool("version", false, "Print LXD's version number and exit.")
-var printGoroutines = gnuflag.Int("print-goroutines-every", -1, "For debugging, print a complete stack trace every n seconds")
-var cpuProfile = gnuflag.String("cpuprofile", "", "Enable cpu profiling into the specified file.")
+var logfile = gnuflag.String("logfile", "", "Logfile to log to (e.g., /var/log/lxd/lxd.log).")
 var memProfile = gnuflag.String("memprofile", "", "Enable memory profiling into the specified file.")
+var printGoroutines = gnuflag.Int("print-goroutines-every", -1, "For debugging, print a complete stack trace every n seconds")
+var syslogFlag = gnuflag.Bool("syslog", false, "Enables syslog logging.")
+var verbose = gnuflag.Bool("verbose", false, "Enables verbose mode.")
+var version = gnuflag.Bool("version", false, "Print LXD's version number and exit.")
 
 func init() {
 	myGroup, err := shared.GroupName(os.Getgid())
@@ -44,22 +37,33 @@ func init() {
 	rand.Seed(time.Now().UTC().UnixNano())
 }
 
-func run() error {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "forkstart":
-			return startContainer(os.Args[1:])
-		case "forkmigrate":
-			return migration.MigrateContainer(os.Args[1:])
-			/*
-				case "forkputfile" and "forkgetfile" handled specially in copyfile.go
-			*/
-		}
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
+}
 
+func run() error {
 	gnuflag.Usage = func() {
-		fmt.Printf("Usage: lxd [options]\n\nOptions:\n")
+		fmt.Printf("Usage: lxd [command] [options]\n\nOptions:\n")
 		gnuflag.PrintDefaults()
+
+		fmt.Printf("\nCommands:\n")
+		fmt.Printf("    shutdown\n")
+		fmt.Printf("        Perform a clean shutdown of LXD and all running containers\n")
+		fmt.Printf("    activateifneeded\n")
+		fmt.Printf("        Check if LXD should be started (at boot) and if so, spawn it through socket activation\n")
+
+		fmt.Printf("\nInternal commands (don't call directly):\n")
+		fmt.Printf("    forkgetfile\n")
+		fmt.Printf("        Grab a file from a running container\n")
+		fmt.Printf("    forkputfile\n")
+		fmt.Printf("        Pushes a file to a running container\n")
+		fmt.Printf("    forkstart\n")
+		fmt.Printf("        Start a container\n")
+		fmt.Printf("    forkmigrate\n")
+		fmt.Printf("        Restore a container after migration\n")
 	}
 
 	gnuflag.Parse(true)
@@ -88,6 +92,21 @@ func run() error {
 		return nil
 	}
 
+	// Process sub-commands
+	if len(os.Args) > 1 {
+		// "forkputfile" and "forkgetfile" are handled specially in copyfile.go
+		switch os.Args[1] {
+		case "forkstart":
+			return startContainer(os.Args[1:])
+		case "forkmigrate":
+			return MigrateContainer(os.Args[1:])
+		case "shutdown":
+			return cleanShutdown()
+		case "activateifneeded":
+			return activateIfNeeded()
+		}
+	}
+
 	if gnuflag.NArg() != 0 {
 		gnuflag.Usage()
 		return fmt.Errorf("Unknown arguments")
@@ -114,6 +133,22 @@ func run() error {
 			return err
 		}
 	}
+
+	_, err = exec.LookPath("apparmor_parser")
+	if err == nil && shared.IsDir("/sys/kernel/security/apparmor") {
+		aaEnabled = true
+	} else {
+		shared.Log.Warn("apparmor_parser binary not found or apparmor " +
+			"fs not mounted. AppArmor disabled.")
+	}
+
+	if aaEnabled && os.Getenv("LXD_SECURITY_APPARMOR") == "false" {
+		aaEnabled = false
+		shared.Log.Warn("apparmor has been manually disabled")
+	}
+
+	/* Can we create devices? */
+	checkCanMknod()
 
 	if *printGoroutines > 0 {
 		go func() {
@@ -165,4 +200,89 @@ func run() error {
 
 	wg.Wait()
 	return ret
+}
+
+func cleanShutdown() error {
+	c, err := lxd.NewClient(&lxd.DefaultConfig, "local")
+	if err != nil {
+		return err
+	}
+
+	serverStatus, err := c.ServerStatus()
+	if err != nil {
+		return err
+	}
+
+	pid := serverStatus.Environment.ServerPid
+	if pid < 1 {
+		return fmt.Errorf("Invalid server PID: %d", pid)
+	}
+
+	err = syscall.Kill(pid, syscall.SIGPWR)
+	if err != nil {
+		return err
+	}
+
+	// This should be replaced with a connection to /1.0/events once the
+	// events websocket is implemented as the polling loop is expensive.
+	timeout := 60 * 1e9
+	for timeout > 0 {
+		timeout -= 500 * 1e6
+
+		err := c.Finger()
+		if err != nil {
+			return nil
+		}
+
+		time.Sleep(500 * 1e6 * time.Nanosecond)
+	}
+
+	return fmt.Errorf("LXD still running after 60s timeout.")
+}
+
+func activateIfNeeded() error {
+	// Don't start a full daemon, we just need DB access
+	d := &Daemon{
+		IsMock:                false,
+		imagesDownloading:     map[string]chan bool{},
+		imagesDownloadingLock: sync.RWMutex{},
+	}
+
+	err := initializeDbObject(d, shared.VarPath("lxd.db"))
+	if err != nil {
+		return err
+	}
+
+	// Look for network socket
+	value, err := d.ConfigValueGet("core.https_address")
+	if err != nil {
+		return err
+	}
+
+	if value != "" {
+		shared.Debugf("Daemon has core.https_address set, activating...")
+		_, err := lxd.NewClient(&lxd.DefaultConfig, "local")
+		return err
+	}
+
+	// Look for auto-started or previously started containers
+	containers, err := doContainersGet(d, true)
+	if err != nil {
+		return err
+	}
+
+	containerInfo := containers.(shared.ContainerInfoList)
+	for _, container := range containerInfo {
+		lastState := container.State.Config["volatile.last_state.power"]
+		autoStart := container.State.ExpandedConfig["boot.autostart"]
+
+		if lastState == "RUNNING" || autoStart == "true" {
+			shared.Debugf("Daemon has auto-started containers, activating...")
+			_, err := lxd.NewClient(&lxd.DefaultConfig, "local")
+			return err
+		}
+	}
+
+	shared.Debugf("No need to start the daemon now.")
+	return nil
 }
