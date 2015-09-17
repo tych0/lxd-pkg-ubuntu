@@ -26,7 +26,6 @@ import (
 	"gopkg.in/lxc/go-lxc.v2"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/lxd/lxd/migration"
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
@@ -149,17 +148,20 @@ type container interface {
 	StateDirGet() string
 	LogFilePathGet() string
 	LogPathGet() string
-	InitPidGet() (int, error)
+	InitPidGet() int
 	StateGet() string
 
-	IdmapSetGet() (*shared.IdmapSet, error)
+	IdmapSetGet() *shared.IdmapSet
 	LastIdmapSetGet() (*shared.IdmapSet, error)
 
 	TemplateApply(trigger string) error
 	ExportToTar(snap string, w io.Writer) error
 
+	Checkpoint(opts lxc.CheckpointOptions) error
+	StartFromMigration(imagesDir string) error
+
 	// TODO: Remove every use of this and remove it.
-	LXContainerGet() (*lxc.Container, error)
+	LXContainerGet() *lxc.Container
 
 	DetachMount(m shared.Device) error
 	AttachMount(m shared.Device) error
@@ -255,15 +257,9 @@ func containerLXDCreateAsSnapshot(d *Daemon, name string,
 			return nil, fmt.Errorf("Container not running\n")
 		}
 		opts := lxc.CheckpointOptions{Directory: stateDir, Stop: true, Verbose: true}
-		source, err := sourceContainer.LXContainerGet()
-		if err != nil {
-			c.Delete()
-			return nil, err
-		}
-
-		err = source.Checkpoint(opts)
-		err2 := migration.CollectCRIULogFile(source, stateDir, "snapshot", "dump")
-		if err != nil {
+		err = sourceContainer.Checkpoint(opts)
+		err2 := CollectCRIULogFile(sourceContainer, stateDir, "snapshot", "dump")
+		if err2 != nil {
 			shared.Log.Warn("failed to collect criu log file", log.Ctx{"error": err2})
 		}
 
@@ -434,7 +430,7 @@ func containerLXDLoad(d *Daemon, name string) (container, error) {
 //       we might be able to split this is up into c.Start().
 func (c *containerLXD) init() error {
 	templateConfBase := "ubuntu"
-	templateConfDir := os.Getenv("LXC_TEMPLATE_CONFIG")
+	templateConfDir := os.Getenv("LXD_LXC_TEMPLATE_CONFIG")
 	if templateConfDir == "" {
 		templateConfDir = "/usr/share/lxc/config"
 	}
@@ -473,6 +469,34 @@ func (c *containerLXD) init() error {
 		}
 	}
 
+	if c.IsNesting() {
+		shared.Debugf("Setting up %s for nesting", c.name)
+		orig := c.c.ConfigItem("lxc.mount.auto")
+		auto := ""
+		if len(orig) == 1 {
+			auto = orig[0]
+		}
+		if !strings.Contains(auto, "cgroup") {
+			auto = fmt.Sprintf("%s %s", auto, "cgroup:mixed")
+			err = c.c.SetConfigItem("lxc.mount.auto", auto)
+			if err != nil {
+				return err
+			}
+		}
+		/*
+		 * mount extra /proc and /sys to work around kernel
+		 * restrictions on remounting them when covered
+		 */
+		err = c.c.SetConfigItem("lxc.mount.entry", "proc dev/.lxc/proc proc create=dir,optional")
+		if err != nil {
+			return err
+		}
+		err = c.c.SetConfigItem("lxc.mount.entry", "sys dev/.lxc/sys sysfs create=dir,optional")
+		if err != nil {
+			return err
+		}
+	}
+
 	if err := c.c.SetConfigItem("lxc.rootfs", c.RootfsPathGet()); err != nil {
 		return err
 	}
@@ -486,6 +510,27 @@ func (c *containerLXD) init() error {
 		return err
 	}
 	if err := setupDevLxdMount(c.c); err != nil {
+		return err
+	}
+
+	/*
+	 * Until stacked apparmor profiles are possible, we have to run nested
+	 * containers unconfined
+	 */
+	if aaEnabled {
+		if aaConfined() {
+			curProfile := aaProfile()
+			shared.Debugf("Running %s in current profile %s (nested container)", c.name, curProfile)
+			curProfile = strings.TrimSuffix(curProfile, " (enforce)")
+			if err := c.c.SetConfigItem("lxc.aa_profile", curProfile); err != nil {
+				return err
+			}
+		} else if err := c.c.SetConfigItem("lxc.aa_profile", AAProfileName(c)); err != nil {
+			return err
+		}
+	}
+
+	if err := c.c.SetConfigItem("lxc.seccomp", SeccompProfilePath(c)); err != nil {
 		return err
 	}
 
@@ -534,10 +579,14 @@ func (c *containerLXD) init() error {
 }
 
 func (c *containerLXD) RenderState() (*shared.ContainerState, error) {
-	state := c.c.State()
-	status := shared.ContainerStatus{State: state.String(), StateCode: shared.State(int(state))}
+	statusCode := shared.FromLXCState(int(c.c.State()))
+	status := shared.ContainerStatus{
+		Status:     statusCode.String(),
+		StatusCode: statusCode,
+	}
+
 	if c.IsRunning() {
-		pid, _ := c.InitPidGet()
+		pid := c.InitPidGet()
 		status.Init = pid
 		status.Ips = c.iPsGet()
 	}
@@ -562,6 +611,19 @@ func (c *containerLXD) Start() error {
 
 	// Start the storage for this container
 	if err := c.StorageStart(); err != nil {
+		return err
+	}
+
+	/* (Re)Load the AA profile; we set it in the container's config above
+	 * in init()
+	 */
+	if err := AALoadProfile(c); err != nil {
+		c.StorageStop()
+		return err
+	}
+
+	if err := SeccompCreateProfile(c); err != nil {
+		c.StorageStop()
 		return err
 	}
 
@@ -592,10 +654,7 @@ func (c *containerLXD) Start() error {
 	}
 
 	/* Deal with idmap changes */
-	idmap, err := c.IdmapSetGet()
-	if err != nil {
-		return err
-	}
+	idmap := c.IdmapSetGet()
 
 	lastIdmap, err := c.LastIdmapSetGet()
 	if err != nil {
@@ -672,6 +731,16 @@ func (c *containerLXD) Freeze() error {
 	return c.c.Freeze()
 }
 
+func (c *containerLXD) IsNesting() bool {
+	switch strings.ToLower(c.config["security.nesting"]) {
+	case "1":
+		return true
+	case "true":
+		return true
+	}
+	return false
+}
+
 func (c *containerLXD) IsPrivileged() bool {
 	switch strings.ToLower(c.config["security.privileged"]) {
 	case "1":
@@ -698,6 +767,10 @@ func (c *containerLXD) Shutdown(timeout time.Duration) error {
 		return err
 	}
 
+	if err := AAUnloadProfile(c); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -710,6 +783,10 @@ func (c *containerLXD) Stop() error {
 
 	// Stop the storage for this container
 	if err := c.StorageStop(); err != nil {
+		return err
+	}
+
+	if err := AAUnloadProfile(c); err != nil {
 		return err
 	}
 
@@ -828,6 +905,9 @@ func (c *containerLXD) Delete() error {
 		return err
 	}
 
+	AADeleteProfile(c)
+	SeccompDeleteProfile(c)
+
 	return nil
 }
 
@@ -930,16 +1010,16 @@ func (c *containerLXD) LogFilePathGet() string {
 	return filepath.Join(c.LogPathGet(), "lxc.log")
 }
 
-func (c *containerLXD) InitPidGet() (int, error) {
-	return c.c.InitPid(), nil
+func (c *containerLXD) InitPidGet() int {
+	return c.c.InitPid()
 }
 
 func (c *containerLXD) StateGet() string {
 	return c.c.State().String()
 }
 
-func (c *containerLXD) IdmapSetGet() (*shared.IdmapSet, error) {
-	return c.idmapset, nil
+func (c *containerLXD) IdmapSetGet() *shared.IdmapSet {
+	return c.idmapset
 }
 
 func (c *containerLXD) LastIdmapSetGet() (*shared.IdmapSet, error) {
@@ -947,7 +1027,7 @@ func (c *containerLXD) LastIdmapSetGet() (*shared.IdmapSet, error) {
 	lastJsonIdmap := config["volatile.last_state.idmap"]
 
 	if lastJsonIdmap == "" {
-		return c.IdmapSetGet()
+		return c.IdmapSetGet(), nil
 	}
 
 	lastIdmap := new(shared.IdmapSet)
@@ -978,8 +1058,8 @@ func (c *containerLXD) ConfigKeySet(key string, value string) error {
 	return c.ConfigReplace(args)
 }
 
-func (c *containerLXD) LXContainerGet() (*lxc.Container, error) {
-	return c.c, nil
+func (c *containerLXD) LXContainerGet() *lxc.Container {
+	return c.c
 }
 
 // ConfigReplace replaces the config of container and tries to live apply
@@ -1015,7 +1095,7 @@ func (c *containerLXD) ConfigReplace(newContainerArgs containerLXDArgs) error {
 	}
 
 	if err = dbContainerConfigInsert(tx, c.id, newContainerArgs.Config); err != nil {
-		shared.Debugf("Error inserting configuration for container %s\n", c.NameGet())
+		shared.Debugf("Error inserting configuration for container %s", c.NameGet())
 		tx.Rollback()
 		return err
 	}
@@ -1048,8 +1128,26 @@ func (c *containerLXD) ConfigReplace(newContainerArgs containerLXDArgs) error {
 	c.baseConfig = newContainerArgs.Config
 	c.baseDevices = newContainerArgs.Devices
 
+	/* Let's try to load the apparmor profile again, in case the
+	 * raw.apparmor config was changed (or deleted). Make sure we do this
+	 * before commit, in case it fails because the user screwed something
+	 * up so we can roll back and not hose their container.
+	 *
+	 * For containers that aren't running, we just want to parse the new
+	 * profile; this is because this code is called during the start
+	 * process after the profile is loaded but before the container starts,
+	 * which will cause a container start to fail. If the container is
+	 * running, we /do/ want to reload the profile, because we want the
+	 * changes to take effect immediately.
+	 */
 	if !c.IsRunning() {
+		AAParseProfile(c)
 		return txCommit(tx)
+	}
+
+	if err := AALoadProfile(c); err != nil {
+		tx.Rollback()
+		return err
 	}
 
 	if err := txCommit(tx); err != nil {
@@ -1110,11 +1208,13 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 		return err
 	}
 
-	if err := idmap.UnshiftRootfs(c.RootfsPathGet()); err != nil {
-		return err
-	}
+	if idmap != nil {
+		if err := idmap.UnshiftRootfs(c.RootfsPathGet()); err != nil {
+			return err
+		}
 
-	defer idmap.ShiftRootfs(c.RootfsPathGet())
+		defer idmap.ShiftRootfs(c.RootfsPathGet())
+	}
 
 	tw := tar.NewWriter(w)
 
@@ -1128,7 +1228,7 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 
 	writeToTar := func(path string, fi os.FileInfo, err error) error {
 		if err := c.tarStoreFile(linkmap, offset, tw, path, fi); err != nil {
-			shared.Debugf("Error tarring up %s: %s\n", path, err)
+			shared.Debugf("Error tarring up %s: %s", path, err)
 			return err
 		}
 		return nil
@@ -1138,12 +1238,12 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 	if shared.PathExists(fnam) {
 		fi, err := os.Lstat(fnam)
 		if err != nil {
-			shared.Debugf("Error statting %s during exportToTar\n", fnam)
+			shared.Debugf("Error statting %s during exportToTar", fnam)
 			tw.Close()
 			return err
 		}
 		if err := c.tarStoreFile(linkmap, offset, tw, fnam, fi); err != nil {
-			shared.Debugf("Error writing to tarfile: %s\n", err)
+			shared.Debugf("Error writing to tarfile: %s", err)
 			tw.Close()
 			return err
 		}
@@ -1385,7 +1485,7 @@ func (c *containerLXD) applyConfig(config map[string]string) error {
 			c.config[k] = v
 		}
 		if err != nil {
-			shared.Debugf("Error setting %s: %q\n", k, err)
+			shared.Debugf("Error setting %s: %q", k, err)
 			return err
 		}
 	}
@@ -1564,7 +1664,7 @@ func (c *containerLXD) setupMacAddresses() error {
 			if err == sql.ErrNoRows {
 				_, err = stmt.Exec(c.id, k, v)
 				if err != nil {
-					shared.Debugf("Error adding mac address to container\n")
+					shared.Debugf("Error adding mac address to container")
 					tx.Rollback()
 					return err
 				}
@@ -1574,7 +1674,7 @@ func (c *containerLXD) setupMacAddresses() error {
 			} else if strings.Contains(racer, "x") {
 				_, err = ustmt.Exec(v, c.id, k)
 				if err != nil {
-					shared.Debugf("Error updating mac address to container\n")
+					shared.Debugf("Error updating mac address to container")
 					tx.Rollback()
 					return err
 				}
@@ -1771,4 +1871,51 @@ func (c *containerLXD) mountShared() error {
 		}
 	}
 	return c.c.SetConfigItem("lxc.mount.entry", entry)
+}
+
+func (c *containerLXD) Checkpoint(opts lxc.CheckpointOptions) error {
+	return c.c.Checkpoint(opts)
+}
+
+func (c *containerLXD) StartFromMigration(imagesDir string) error {
+	f, err := ioutil.TempFile("", "lxd_lxc_migrateconfig_")
+	if err != nil {
+		return err
+	}
+
+	if err = f.Chmod(0600); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return err
+	}
+	f.Close()
+	os.Remove(f.Name())
+
+	if err := c.c.SaveConfigFile(f.Name()); err != nil {
+		return err
+	}
+
+	/* (Re)Load the AA profile; we set it in the container's config above
+	 * in init()
+	 */
+	if err := AALoadProfile(c); err != nil {
+		c.StorageStop()
+		return err
+	}
+
+	if err := SeccompCreateProfile(c); err != nil {
+		c.StorageStop()
+		return err
+	}
+
+	cmd := exec.Command(
+		os.Args[0],
+		"forkmigrate",
+		c.name,
+		c.c.ConfigPath(),
+		f.Name(),
+		imagesDir,
+	)
+
+	return cmd.Run()
 }

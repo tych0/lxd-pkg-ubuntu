@@ -52,14 +52,14 @@ func storageLVMThinpoolExists(vgName string, poolName string) (bool, error) {
 
 func storageLVMGetThinPoolUsers(d *Daemon) ([]string, error) {
 	results := []string{}
-	vgname, err := d.ConfigValueGet("core.lvm_vg_name")
+	vgname, err := d.ConfigValueGet("storage.lvm_vg_name")
 	if err != nil {
 		return results, fmt.Errorf("Error getting lvm_vg_name config")
 	}
 	if vgname == "" {
 		return results, nil
 	}
-	poolname, err := d.ConfigValueGet("core.lvm_thinpool_name")
+	poolname, err := d.ConfigValueGet("storage.lvm_thinpool_name")
 	if err != nil {
 		return results, fmt.Errorf("Error getting lvm_thinpool_name config")
 	}
@@ -109,7 +109,7 @@ func storageLVMSetThinPoolNameConfig(d *Daemon, poolname string) error {
 		return fmt.Errorf("Can not change LVM config. Images or containers are still using LVs: %v", users)
 	}
 
-	vgname, err := d.ConfigValueGet("core.lvm_vg_name")
+	vgname, err := d.ConfigValueGet("storage.lvm_vg_name")
 	if err != nil {
 		return fmt.Errorf("Error getting lvm_vg_name config: %v", err)
 	}
@@ -128,7 +128,7 @@ func storageLVMSetThinPoolNameConfig(d *Daemon, poolname string) error {
 		}
 	}
 
-	err = d.ConfigValueSet("core.lvm_thinpool_name", poolname)
+	err = d.ConfigValueSet("storage.lvm_thinpool_name", poolname)
 	if err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func storageLVMSetVolumeGroupNameConfig(d *Daemon, vgname string) error {
 		}
 	}
 
-	err = d.ConfigValueSet("core.lvm_vg_name", vgname)
+	err = d.ConfigValueSet("storage.lvm_vg_name", vgname)
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func (s *storageLvm) Init(config map[string]interface{}) (storage, error) {
 	}
 
 	if config["vgName"] == nil {
-		vgName, err := s.d.ConfigValueGet("core.lvm_vg_name")
+		vgName, err := s.d.ConfigValueGet("storage.lvm_vg_name")
 		if err != nil {
 			return s, fmt.Errorf("Error checking server config: %v", err)
 		}
@@ -432,30 +432,6 @@ func (s *storageLvm) ContainerSnapshotCreate(
 
 func (s *storageLvm) createSnapshotContainer(
 	snapshotContainer container, sourceContainer container, readonly bool) error {
-	// must freeze and syncfs LV to take consistent snapshot:
-	wasRunning := false
-	if sourceContainer.IsRunning() {
-		wasRunning = true
-		if err := sourceContainer.Freeze(); err != nil {
-			shared.Log.Error("LVM Snapshot Create: could not freeze source container",
-				log.Ctx{"sourceContainer name": sourceContainer.NameGet(),
-					"err": err})
-			return err
-		}
-
-		srcDir, err := os.Open(sourceContainer.PathGet(""))
-		if err != nil {
-			return fmt.Errorf("Error opening mounted sourceContainer path for syncfs: '%v'", err)
-		}
-		defer srcDir.Close()
-		_, _, errno := syscall.Syscall(sysSyncfsTrapNum, srcDir.Fd(), 0, 0)
-		if errno != 0 {
-			return fmt.Errorf("Error syncing fs of frozen source container: '%s'", err)
-		}
-		shared.Log.Debug(
-			"LVM Snapshot Create: Frozen source container",
-			log.Ctx{"sourceContainer name": sourceContainer.NameGet()})
-	}
 
 	srcName := containerNameToLVName(sourceContainer.NameGet())
 	destName := containerNameToLVName(snapshotContainer.NameGet())
@@ -477,14 +453,6 @@ func (s *storageLvm) createSnapshotContainer(
 	err = os.Symlink(lvpath, dest)
 	if err != nil {
 		return err
-	}
-
-	if wasRunning {
-		if err := sourceContainer.Unfreeze(); err != nil {
-			shared.Log.Error("Error unfreezing source container after snapshot",
-				log.Ctx{"sourceContainer name": sourceContainer.NameGet()})
-			return err
-		}
 	}
 
 	return nil
@@ -637,7 +605,7 @@ func (s *storageLvm) createDefaultThinPool() (string, error) {
 
 func (s *storageLvm) createThinLV(lvname string) (string, error) {
 
-	poolname, err := s.d.ConfigValueGet("core.lvm_thinpool_name")
+	poolname, err := s.d.ConfigValueGet("storage.lvm_thinpool_name")
 	if err != nil {
 		return "", fmt.Errorf("Error checking server config, err=%v", err)
 	}

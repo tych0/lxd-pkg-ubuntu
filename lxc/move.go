@@ -17,9 +17,9 @@ func (c *moveCmd) showByDefault() bool {
 
 func (c *moveCmd) usage() string {
 	return gettext.Gettext(
-		"Move containers within or in between lxd instances.\n" +
-			"\n" +
-			"lxc move [remote:]<source container> [remote:]<destination container>\n")
+		`Move containers within or in between lxd instances.
+
+lxc move [remote:]<source container> [remote:]<destination container>`)
 }
 
 func (c *moveCmd) flags() {}
@@ -51,7 +51,7 @@ func (c *moveCmd) run(config *lxd.Config, args []string) error {
 			if err != nil {
 				return err
 			}
-			canRename = status.State() != shared.RUNNING
+			canRename = status.Status.StatusCode != shared.Running
 		}
 
 		if canRename {

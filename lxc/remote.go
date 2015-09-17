@@ -5,9 +5,11 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/chai2010/gettext-go/gettext"
+	"github.com/olekukonko/tablewriter"
 	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/lxc/lxd"
@@ -28,15 +30,15 @@ func (c *remoteCmd) showByDefault() bool {
 
 func (c *remoteCmd) usage() string {
 	return gettext.Gettext(
-		"Manage remote LXD servers.\n" +
-			"\n" +
-			"lxc remote add <name> <url> [--accept-certificate] [--password=PASSWORD]  Add the remote <name> at <url>.\n" +
-			"lxc remote remove <name>                                                  Remove the remote <name>.\n" +
-			"lxc remote list                                                           List all remotes.\n" +
-			"lxc remote rename <old> <new>                                             Rename remote <old> to <new>.\n" +
-			"lxc remote set-url <name> <url>                                           Update <name>'s url to <url>.\n" +
-			"lxc remote set-default <name>                                             Set the default remote.\n" +
-			"lxc remote get-default                                                    Print the default remote.\n")
+		`Manage remote LXD servers.
+
+lxc remote add <name> <url> [--accept-certificate] [--password=PASSWORD] [--public]    Add the remote <name> at <url>.
+lxc remote remove <name>                                                               Remove the remote <name>.
+lxc remote list                                                                        List all remotes.
+lxc remote rename <old> <new>                                                          Rename remote <old> to <new>.
+lxc remote set-url <name> <url>                                                        Update <name>'s url to <url>.
+lxc remote set-default <name>                                                          Set the default remote.
+lxc remote get-default                                                                 Print the default remote.`)
 }
 
 func (c *remoteCmd) flags() {
@@ -155,7 +157,7 @@ func addServer(config *lxd.Config, server string, addr string, acceptCert bool, 
 				return err
 			}
 		}
-		fmt.Printf("\n")
+		fmt.Println("")
 		password = string(pwd)
 	}
 
@@ -174,7 +176,7 @@ func addServer(config *lxd.Config, server string, addr string, acceptCert bool, 
 
 func removeCertificate(remote string) {
 	certf := lxd.ServerCertPath(remote)
-	shared.Debugf("Trying to remove %s\n", certf)
+	shared.Debugf("Trying to remove %s", certf)
 
 	os.Remove(certf)
 }
@@ -218,15 +220,24 @@ func (c *remoteCmd) run(config *lxd.Config, args []string) error {
 		removeCertificate(args[1])
 
 	case "list":
+		data := [][]string{}
 		for name, rc := range config.Remotes {
 			if rc.Public {
-				fmt.Println(fmt.Sprintf("%s <%s> [PUBLIC]", name, rc.Addr))
+				data = append(data, []string{name, rc.Addr, gettext.Gettext("YES")})
 			} else {
-				fmt.Println(fmt.Sprintf("%s <%s>", name, rc.Addr))
+				data = append(data, []string{name, rc.Addr, gettext.Gettext("NO")})
 			}
 		}
-		/* Here, we don't need to save since we didn't actually modify
-		 * anything, so just return. */
+
+		table := tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{
+			gettext.Gettext("NAME"),
+			gettext.Gettext("URL"),
+			gettext.Gettext("PUBLIC")})
+		sort.Sort(ByName(data))
+		table.AppendBulk(data)
+		table.Render()
+
 		return nil
 
 	case "rename":

@@ -14,6 +14,15 @@ import (
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
+func dbUpdateFromV16(db *sql.DB) error {
+	stmt := `
+UPDATE config SET key='storage.lvm_vg_name' WHERE key = 'core.lvm_vg_name';
+UPDATE config SET key='storage.lvm_thinpool_name' WHERE key = 'core.lvm_thinpool_name';
+INSERT INTO schema (version, updated_at) VALUES (?, strftime("%s"));`
+	_, err := db.Exec(stmt, 17)
+	return err
+}
+
 func dbUpdateFromV15(d *Daemon) error {
 	// munge all LVM-backed containers' LV names to match what is
 	// required for snapshot support
@@ -23,7 +32,7 @@ func dbUpdateFromV15(d *Daemon) error {
 		return err
 	}
 
-	vgName, err := d.ConfigValueGet("core.lvm_vg_name")
+	vgName, err := d.ConfigValueGet("storage.lvm_vg_name")
 	if err != nil {
 		return fmt.Errorf("Error checking server config: %v", err)
 	}
@@ -44,11 +53,11 @@ func dbUpdateFromV15(d *Daemon) error {
 		newLVName = strings.Replace(newLVName, shared.SnapshotDelimiter, "-", -1)
 
 		if cName == newLVName {
-			shared.Log.Debug("no need to rename, skipping", log.Ctx{"cName": cName, "newLVName": newLVName})
+			shared.Log.Debug("No need to rename, skipping", log.Ctx{"cName": cName, "newLVName": newLVName})
 			continue
 		}
 
-		shared.Log.Debug("about to rename cName in lv upgrade", log.Ctx{"lvLinkPath": lvLinkPath, "cName": cName, "newLVName": newLVName})
+		shared.Log.Debug("About to rename cName in lv upgrade", log.Ctx{"lvLinkPath": lvLinkPath, "cName": cName, "newLVName": newLVName})
 
 		output, err := exec.Command("lvrename", vgName, cName, newLVName).CombinedOutput()
 		if err != nil {
@@ -697,6 +706,12 @@ func dbUpdate(d *Daemon, prevVersion int) error {
 	}
 	if prevVersion < 16 {
 		err = dbUpdateFromV15(d)
+		if err != nil {
+			return err
+		}
+	}
+	if prevVersion < 17 {
+		err = dbUpdateFromV16(db)
 		if err != nil {
 			return err
 		}

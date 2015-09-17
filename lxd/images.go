@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v2"
@@ -60,19 +61,40 @@ func detectCompression(fname string) ([]string, string, error) {
 
 }
 
+var canMknod = true
+
+func checkCanMknod() {
+	/* TODO - mktemp */
+	fnam := shared.VarPath("null")
+	// warning to cut-pasters: can't do the below in general, that is if minor is big
+	if err := syscall.Mknod(fnam, syscall.S_IFCHR, int((int64(1)<<8)|int64(3))); err != nil {
+		canMknod = false
+		os.Remove(fnam)
+	}
+}
+
 func untar(tarball string, path string) error {
 	extractArgs, _, err := detectCompression(tarball)
 	if err != nil {
 		return err
 	}
 
-	args := []string{"-C", path, "--numeric-owner"}
+	command := "tar"
+	args := []string{}
+	if !canMknod {
+		// if we are running in a userns where we cannot mknod,
+		// then run with a seccomp filter which turns mknod into a
+		// a noop.  The container config had better know how to bind
+		// mount the devices in at container start.
+		args = append(args, "--exclude=dev/*")
+	}
+	args = append(args, "-C", path, "--numeric-owner")
 	args = append(args, extractArgs...)
 	args = append(args, tarball)
 
-	output, err := exec.Command("tar", args...).CombinedOutput()
+	output, err := exec.Command(command, args...).CombinedOutput()
 	if err != nil {
-		shared.Debugf("Unpacking failed\n")
+		shared.Debugf("Unpacking failed")
 		shared.Debugf(string(output))
 		return err
 	}
@@ -631,8 +653,6 @@ func getImageMetadata(fname string) (*imageMetadata, error) {
 	args = append(args, compressionArgs...)
 	args = append(args, fname, metadataName)
 
-	shared.Debugf("Extracting metadata.yaml using command: tar %s", strings.Join(args, " "))
-
 	// read the metadata.yaml
 	output, err := exec.Command("tar", args...).CombinedOutput()
 
@@ -714,7 +734,7 @@ func doDeleteImage(d *Daemon, fingerprint string) error {
 	fname := shared.VarPath("images", imgInfo.Fingerprint)
 	err = os.Remove(fname)
 	if err != nil {
-		shared.Debugf("Error deleting image file %s: %s\n", fname, err)
+		shared.Debugf("Error deleting image file %s: %s", fname, err)
 	}
 
 	if err = s.ImageDelete(imgInfo.Fingerprint); err != nil {

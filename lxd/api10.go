@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"syscall"
 
 	"gopkg.in/lxc/go-lxc.v2"
@@ -96,7 +97,9 @@ func api10Get(d *Daemon, r *http.Request) Response {
 			"kernel_version":      kernelVersion,
 			"storage":             d.Storage.GetStorageTypeName(),
 			"storage_version":     d.Storage.GetStorageTypeVersion(),
-			"version":             shared.Version}
+			"server":              "lxd",
+			"server_pid":          os.Getpid(),
+			"server_version":      shared.Version}
 
 		body["environment"] = env
 
@@ -150,7 +153,7 @@ func api10Put(d *Daemon, r *http.Request) Response {
 			if err != nil {
 				return InternalError(err)
 			}
-		} else if key == "core.lvm_vg_name" {
+		} else if key == "storage.lvm_vg_name" {
 			err := storageLVMSetVolumeGroupNameConfig(d, value.(string))
 			if err != nil {
 				return InternalError(err)
@@ -158,7 +161,7 @@ func api10Put(d *Daemon, r *http.Request) Response {
 			if err = d.SetupStorageDriver(); err != nil {
 				return InternalError(err)
 			}
-		} else if key == "core.lvm_thinpool_name" {
+		} else if key == "storage.lvm_thinpool_name" {
 			err := storageLVMSetThinPoolNameConfig(d, value.(string))
 			if err != nil {
 				return InternalError(err)

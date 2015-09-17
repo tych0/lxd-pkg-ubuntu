@@ -173,7 +173,7 @@ func dbContainerConfigInsert(tx *sql.Tx, id int, config map[string]string) error
 
 		_, err = stmt.Exec(id, k, v)
 		if err != nil {
-			shared.Debugf("Error adding configuration item %s = %s to container %d\n",
+			shared.Debugf("Error adding configuration item %s = %s to container %d",
 				k, v, id)
 			return err
 		}
@@ -194,7 +194,7 @@ func dbContainerProfilesInsert(tx *sql.Tx, id int, profiles []string) error {
 	for _, p := range profiles {
 		_, err = stmt.Exec(id, p, applyOrder)
 		if err != nil {
-			shared.Debugf("Error adding profile %s to container: %s\n",
+			shared.Debugf("Error adding profile %s to container: %s",
 				p, err)
 			return err
 		}
@@ -337,6 +337,8 @@ func ValidContainerConfigKey(k string) bool {
 	case "limits.memory":
 		return true
 	case "security.privileged":
+		return true
+	case "security.nesting":
 		return true
 	case "raw.apparmor":
 		return true

@@ -22,9 +22,9 @@ func (c *helpCmd) showByDefault() bool {
 
 func (c *helpCmd) usage() string {
 	return gettext.Gettext(
-		"Presents details on how to use LXD.\n" +
-			"\n" +
-			"lxd help [--all]\n")
+		`Presents details on how to use LXD.
+
+lxd help [--all]`)
 }
 
 var showAll bool
@@ -38,7 +38,7 @@ func (c *helpCmd) run(_ *lxd.Config, args []string) error {
 		for _, name := range args {
 			cmd, ok := commands[name]
 			if !ok {
-				fmt.Fprintf(os.Stderr, gettext.Gettext("error: unknown command: %s\n"), name)
+				fmt.Fprintf(os.Stderr, gettext.Gettext("error: unknown command: %s")+"\n", name)
 			} else {
 				fmt.Fprintf(os.Stderr, cmd.usage())
 			}
@@ -46,7 +46,8 @@ func (c *helpCmd) run(_ *lxd.Config, args []string) error {
 		return nil
 	}
 
-	fmt.Println(gettext.Gettext("Usage: lxc [subcommand] [options]\nAvailable commands:\n"))
+	fmt.Println(gettext.Gettext("Usage: lxc [subcommand] [options]"))
+	fmt.Println(gettext.Gettext("Available commands:"))
 	var names []string
 	for name := range commands {
 		names = append(names, name)
@@ -61,7 +62,10 @@ func (c *helpCmd) run(_ *lxd.Config, args []string) error {
 	fmt.Println()
 	if !showAll {
 		fmt.Println(gettext.Gettext("Options:"))
-		fmt.Println("  --all    " + gettext.Gettext("Print less common commands."))
+		fmt.Println("  --all              " + gettext.Gettext("Print less common commands."))
+		fmt.Println("  --config <config>  " + gettext.Gettext("Use an alternative config path."))
+		fmt.Println("  --debug            " + gettext.Gettext("Print debug information."))
+		fmt.Println("  --verbose          " + gettext.Gettext("Print verbose information."))
 	}
 	return nil
 }

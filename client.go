@@ -170,7 +170,7 @@ func readMyCert() (string, string, error) {
 func (c *Client) loadServerCert() {
 	cert, err := shared.ReadCert(ServerCertPath(c.name))
 	if err != nil {
-		shared.Debugf("Error reading the server certificate for %s: %v\n", c.name, err)
+		shared.Debugf("Error reading the server certificate for %s: %v", c.name, err)
 		return
 	}
 
@@ -590,7 +590,7 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 			dest.DeleteAlias(alias.Name)
 			err = dest.PostAlias(alias.Name, alias.Description, info.Fingerprint)
 			if err != nil {
-				fmt.Printf(gettext.Gettext("Error adding alias %s\n"), alias.Name)
+				fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias.Name)
 			}
 		}
 	}
@@ -600,7 +600,7 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 		dest.DeleteAlias(alias)
 		err = dest.PostAlias(alias, alias, info.Fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s\n"), alias)
+			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
 		}
 	}
 
@@ -814,7 +814,7 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 			if eqIndex > -1 {
 				imgProps.Set(value[:eqIndex], value[eqIndex+1:])
 			} else {
-				return "", fmt.Errorf(gettext.Gettext("Bad image property: %s\n"), value)
+				return "", fmt.Errorf(gettext.Gettext("Bad image property: %s"), value)
 			}
 
 		}
@@ -847,7 +847,7 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 		c.DeleteAlias(alias)
 		err = c.PostAlias(alias, alias, fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s\n"), alias)
+			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
 		}
 	}
 
@@ -935,8 +935,8 @@ func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	})
 	if err != nil {
 		if acceptCert == false {
-			fmt.Printf(gettext.Gettext("Certificate fingerprint: % x\n"), c.scertDigest)
-			fmt.Printf(gettext.Gettext("ok (y/n)? "))
+			fmt.Printf(gettext.Gettext("Certificate fingerprint: %x")+"\n", c.scertDigest)
+			fmt.Printf(gettext.Gettext("ok (y/n)?") + " ")
 			line, err := shared.ReadStdin()
 			if err != nil {
 				return err
@@ -1040,6 +1040,10 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 	architectures := serverStatus.Environment.Architectures
 
 	source := shared.Jmap{"type": "image"}
+
+	if image == "" {
+		return nil, fmt.Errorf(gettext.Gettext("You must provide an image hash or alias name."))
+	}
 
 	if imgremote != c.name {
 		source["type"] = "image"
@@ -1205,7 +1209,7 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 						continue
 					}
 
-					shared.Debugf("Window size is now: %dx%d\n", width, height)
+					shared.Debugf("Window size is now: %dx%d", width, height)
 
 					w, err := control.NextWriter(websocket.TextMessage)
 					if err != nil {
@@ -1236,7 +1240,7 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string, stdin *o
 					signal.Notify(ch, syscall.SIGWINCH)
 					sig := <-ch
 
-					shared.Debugf("Received '%s signal', updating window geometry.\n", sig)
+					shared.Debugf("Received '%s signal', updating window geometry.", sig)
 				}
 
 				closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
@@ -1636,7 +1640,7 @@ func (c *Client) GetProfileConfig(profile string) (map[string]string, error) {
 func (c *Client) SetProfileConfigItem(profile, key, value string) error {
 	st, err := c.ProfileConfig(profile)
 	if err != nil {
-		shared.Debugf("Error getting profile %s to update\n", profile)
+		shared.Debugf("Error getting profile %s to update", profile)
 		return err
 	}
 
@@ -1730,14 +1734,14 @@ func (c *Client) ContainerDeviceAdd(container, devname, devtype string, props []
 	for _, p := range props {
 		results := strings.SplitN(p, "=", 2)
 		if len(results) != 2 {
-			return nil, fmt.Errorf(gettext.Gettext("no value found in %q\n"), p)
+			return nil, fmt.Errorf(gettext.Gettext("no value found in %q"), p)
 		}
 		k := results[0]
 		v := results[1]
 		newdev[k] = v
 	}
 	if st.Devices != nil && st.Devices.ContainsName(devname) {
-		return nil, fmt.Errorf(gettext.Gettext("device already exists\n"))
+		return nil, fmt.Errorf(gettext.Gettext("device already exists"))
 	}
 	newdev["type"] = devtype
 	if st.Devices == nil {
@@ -1787,14 +1791,14 @@ func (c *Client) ProfileDeviceAdd(profile, devname, devtype string, props []stri
 	for _, p := range props {
 		results := strings.SplitN(p, "=", 2)
 		if len(results) != 2 {
-			return nil, fmt.Errorf(gettext.Gettext("no value found in %q\n"), p)
+			return nil, fmt.Errorf(gettext.Gettext("no value found in %q"), p)
 		}
 		k := results[0]
 		v := results[1]
 		newdev[k] = v
 	}
 	if st.Devices != nil && st.Devices.ContainsName(devname) {
-		return nil, fmt.Errorf(gettext.Gettext("device already exists\n"))
+		return nil, fmt.Errorf(gettext.Gettext("device already exists"))
 	}
 	newdev["type"] = devtype
 	if st.Devices == nil {
@@ -1874,7 +1878,7 @@ func (c *Client) ImageFromContainer(cname string, public bool, aliases []string,
 		c.DeleteAlias(alias)
 		err = c.PostAlias(alias, alias, fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s\n"), alias)
+			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
 		}
 	}
 
