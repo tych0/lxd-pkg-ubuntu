@@ -1,6 +1,6 @@
 [Unit]
 Description=Container hypervisor based on LXC
-After=cgmanager.service lxc.service
+After=cgmanager.service lxc.service lxd-unix.socket
 Requires=cgmanager.service lxc.service lxd-unix.socket
 
 [Service]
@@ -12,4 +12,4 @@ Restart=on-failure
 LimitNOFILE=65536
 
 [Install]
-Also=lxd-unix.socket
+Also=lxd-startup.service lxd-unix.socket

@@ -1,0 +1,12 @@
+[Unit]
+Description=Container hypervisor based on LXC - boot time check
+After=cgmanager.service lxc.service lxd-unix.socket
+Requires=cgmanager.service lxc.service lxd-unix.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/lxd activateifneeded
+TimeoutSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -36,7 +36,7 @@ override_dh_install:
 
 override_dh_installinit:
 	dh_installinit
-	#dh_systemd_enable -plxd --name=lxd
+	dh_systemd_enable -plxd --name=lxd-startup
 
 override_dh_auto_test:
-	# cd test && ./main.sh
+	echo "The testsuite requires privileges and so is run through autopkgtest"
