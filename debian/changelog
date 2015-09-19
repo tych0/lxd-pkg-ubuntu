@@ -1,3 +1,11 @@
+lxd (0.18-0ubuntu2) wily; urgency=medium
+
+  * Add a lxd-startup.service systemd unit to detect whether LXD is
+    needed at startup (bound to network or got containers to start) and if
+    so, triggers it.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sat, 19 Sep 2015 14:50:34 -0400
+
 lxd (0.18-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.18)
