@@ -95,6 +95,15 @@ func doSet(config *lxd.Config, args []string) error {
 
 	key := args[2]
 	value := args[3]
+
+	if !terminal.IsTerminal(syscall.Stdin) && value == "-" {
+		buf, err := ioutil.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("Can't read from stdin: %s", err)
+		}
+		value = string(buf[:])
+	}
+
 	return d.SetContainerConfig(container, key, value)
 }
 
@@ -372,12 +381,13 @@ func doConfigEdit(client *lxd.Client, cont string) error {
 		os.Remove(fname)
 		return err
 	}
-	f.Write([]byte(configEditHelp))
+	f.Write([]byte(configEditHelp + "\n"))
 	f.Write(data)
 	f.Close()
 	defer os.Remove(fname)
 
 	for {
+		var err error
 		cmdParts := strings.Fields(editor)
 		cmd := exec.Command(cmdParts[0], append(cmdParts[1:], fname)...)
 		cmd.Stdin = os.Stdin
@@ -392,9 +402,14 @@ func doConfigEdit(client *lxd.Client, cont string) error {
 			return err
 		}
 		newdata := shared.BriefContainerState{}
+
 		err = yaml.Unmarshal(contents, &newdata)
+		if err == nil {
+			err = client.UpdateContainerConfig(cont, newdata)
+		}
+
 		if err != nil {
-			fmt.Fprintf(os.Stderr, gettext.Gettext("YAML parse error %v")+"\n", err)
+			fmt.Fprintf(os.Stderr, gettext.Gettext("Config parsing error: %s")+"\n", err)
 			fmt.Println(gettext.Gettext("Press enter to start the editor again"))
 			_, err := os.Stdin.Read(make([]byte, 1))
 			if err != nil {
@@ -403,10 +418,9 @@ func doConfigEdit(client *lxd.Client, cont string) error {
 
 			continue
 		}
-		err = client.UpdateContainerConfig(cont, newdata)
 		break
 	}
-	return err
+	return nil
 }
 
 func deviceAdd(config *lxd.Config, which string, args []string) error {

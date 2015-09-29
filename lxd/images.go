@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v2"
@@ -61,18 +60,6 @@ func detectCompression(fname string) ([]string, string, error) {
 
 }
 
-var canMknod = true
-
-func checkCanMknod() {
-	/* TODO - mktemp */
-	fnam := shared.VarPath("null")
-	// warning to cut-pasters: can't do the below in general, that is if minor is big
-	if err := syscall.Mknod(fnam, syscall.S_IFCHR, int((int64(1)<<8)|int64(3))); err != nil {
-		canMknod = false
-		os.Remove(fnam)
-	}
-}
-
 func untar(tarball string, path string) error {
 	extractArgs, _, err := detectCompression(tarball)
 	if err != nil {
@@ -81,7 +68,7 @@ func untar(tarball string, path string) error {
 
 	command := "tar"
 	args := []string{}
-	if !canMknod {
+	if !runningInUserns {
 		// if we are running in a userns where we cannot mknod,
 		// then run with a seccomp filter which turns mknod into a
 		// a noop.  The container config had better know how to bind
@@ -175,9 +162,9 @@ func imgPostContInfo(d *Daemon, r *http.Request, req imagePostReq,
 	info.Filename = req.Filename
 	switch req.Public {
 	case true:
-		info.Public = 1
+		info.Public = true
 	case false:
-		info.Public = 0
+		info.Public = false
 	}
 
 	snap := ""
@@ -293,7 +280,8 @@ func getImgPostInfo(d *Daemon, r *http.Request,
 	var imageMeta *imageMetadata
 	logger := shared.Log.New(log.Ctx{"function": "getImgPostInfo"})
 
-	info.Public, _ = strconv.Atoi(r.Header.Get("X-LXD-public"))
+	public, _ := strconv.Atoi(r.Header.Get("X-LXD-public"))
+	info.Public = public == 1
 	propHeaders := r.Header[http.CanonicalHeaderKey("X-LXD-properties")]
 	ctype, ctypeParams, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
@@ -476,11 +464,16 @@ func getImgPostInfo(d *Daemon, r *http.Request,
 	return info, nil
 }
 
-func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public int,
+func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public bool,
 	arch int, creationDate int64, expiryDate int64, properties map[string]string) error {
 	tx, err := dbBegin(d.db)
 	if err != nil {
 		return err
+	}
+
+	sqlPublic := 0
+	if public {
+		sqlPublic = 1
 	}
 
 	stmt, err := tx.Prepare(`INSERT INTO images (fingerprint, filename, size, public, architecture, creation_date, expiry_date, upload_date) VALUES (?, ?, ?, ?, ?, ?, ?, strftime("%s"))`)
@@ -490,7 +483,7 @@ func dbInsertImage(d *Daemon, fp string, fname string, sz int64, public int,
 	}
 	defer stmt.Close()
 
-	result, err := stmt.Exec(fp, fname, sz, public, arch, creationDate, expiryDate)
+	result, err := stmt.Exec(fp, fname, sz, sqlPublic, arch, creationDate, expiryDate)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -543,7 +536,7 @@ func imageBuildFromInfo(d *Daemon, info shared.ImageInfo) (metadata map[string]s
 		info.Fingerprint,
 		info.Filename,
 		info.Size,
-		info.Public,
+		shared.InterfaceToBool(info.Public),
 		info.Architecture,
 		info.CreationDate,
 		info.ExpiryDate,
@@ -737,6 +730,14 @@ func doDeleteImage(d *Daemon, fingerprint string) error {
 		shared.Debugf("Error deleting image file %s: %s", fname, err)
 	}
 
+	fname = shared.VarPath("images", imgInfo.Fingerprint) + ".rootfs"
+	if shared.PathExists(fname) {
+		err = os.Remove(fname)
+		if err != nil {
+			shared.Debugf("Error deleting image file %s: %s", fname, err)
+		}
+	}
+
 	if err = s.ImageDelete(imgInfo.Fingerprint); err != nil {
 		return err
 	}
@@ -875,6 +876,7 @@ func imageGet(d *Daemon, r *http.Request) Response {
 
 type imagePutReq struct {
 	Properties map[string]string `json:"properties"`
+	Public     bool              `json:"public"`
 }
 
 func imagePut(d *Daemon, r *http.Request) Response {
@@ -912,6 +914,12 @@ func imagePut(d *Daemon, r *http.Request) Response {
 	}
 
 	if err := txCommit(tx); err != nil {
+		return InternalError(err)
+	}
+
+	err = dbImageSetPublic(d.db, imgInfo.Id, imageRaw.Public)
+	if err != nil {
+		tx.Rollback()
 		return InternalError(err)
 	}
 

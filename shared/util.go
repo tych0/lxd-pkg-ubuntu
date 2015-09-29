@@ -16,10 +16,10 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 )
 
 const SnapshotDelimiter = "/"
@@ -90,20 +90,6 @@ func IsDir(name string) bool {
 		return false
 	}
 	return stat.IsDir()
-}
-
-func IsMountPoint(name string) bool {
-	stat, err := os.Stat(name)
-	if err != nil {
-		return false
-	}
-
-	rootStat, err := os.Lstat(name + "/..")
-	if err != nil {
-		return false
-	}
-	// If the directory has the same device as parent, then it's not a mountpoint.
-	return stat.Sys().(*syscall.Stat_t).Dev != rootStat.Sys().(*syscall.Stat_t).Dev
 }
 
 // VarPath returns the provided path elements joined by a slash and
@@ -323,46 +309,6 @@ func IsSnapshot(name string) bool {
 	return strings.Contains(name, SnapshotDelimiter)
 }
 
-func ReadLastNLines(f *os.File, lines int) (string, error) {
-	if lines <= 0 {
-		return "", fmt.Errorf("invalid line count")
-	}
-
-	stat, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-
-	data, err := syscall.Mmap(int(f.Fd()), 0, int(stat.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return "", err
-	}
-	defer syscall.Munmap(data)
-
-	for i := len(data) - 1; i >= 0; i-- {
-		if data[i] == '\n' {
-			lines--
-		}
-
-		if lines < 0 {
-			return string(data[i+1 : len(data)]), nil
-		}
-	}
-
-	return string(data), nil
-}
-
-func SetSize(fd int, width int, height int) (err error) {
-	var dimensions [4]uint16
-	dimensions[0] = uint16(height)
-	dimensions[1] = uint16(width)
-
-	if _, _, err := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TIOCSWINSZ), uintptr(unsafe.Pointer(&dimensions)), 0, 0, 0); err != 0 {
-		return err
-	}
-	return nil
-}
-
 func ReadDir(p string) ([]string, error) {
 	ents, err := ioutil.ReadDir(p)
 	if err != nil {
@@ -543,4 +489,70 @@ func DeepCopy(src, dest interface{}) error {
 	}
 
 	return nil
+}
+
+func RunningInUserNS() bool {
+	file, err := os.Open("/proc/self/uid_map")
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	buf := bufio.NewReader(file)
+	l, _, err := buf.ReadLine()
+	if err != nil {
+		return false
+	}
+
+	line := string(l)
+	var a, b, c int64
+	fmt.Sscanf(line, "%d %d %d", &a, &b, &c)
+	if a == 0 && b == 0 && c == 4294967295 {
+		return false
+	}
+	return true
+}
+
+func ValidHostname(name string) bool {
+	// Validate length
+	if len(name) < 1 || len(name) > 63 {
+		return false
+	}
+
+	// Validate first character
+	if strings.HasPrefix(name, "-") {
+		return false
+	}
+
+	if _, err := strconv.Atoi(string(name[0])); err == nil {
+		return false
+	}
+
+	// Validate last character
+	if strings.HasSuffix(name, "-") {
+		return false
+	}
+
+	// Validate the character set
+	match, _ := regexp.MatchString("^[-a-zA-Z0-9]*$", name)
+	if !match {
+		return false
+	}
+
+	return true
+}
+
+func InterfaceToBool(value interface{}) bool {
+	switch t := value.(type) {
+	case bool:
+		return t
+	case float32:
+		return t == 1
+	case float64:
+		return t == 1
+	case int:
+		return t == 1
+	default:
+		return false
+	}
 }

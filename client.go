@@ -215,7 +215,6 @@ func NewClient(config *Config, remote string) (*Client, error) {
 			c.http.Transport = &http.Transport{Dial: uDial}
 			c.websocketDialer.NetDial = uDial
 			c.Remote = &r
-			return &c, nil
 		} else {
 			certf, keyf, err := readMyCert()
 			if err != nil {
@@ -256,6 +255,7 @@ func NewClient(config *Config, remote string) (*Client, error) {
 	} else {
 		return nil, fmt.Errorf(gettext.Gettext("unknown remote name: %q"), remote)
 	}
+
 	if err := c.Finger(); err != nil {
 		return nil, err
 	}
@@ -506,6 +506,27 @@ func (c *Client) AmTrusted() bool {
 	return auth == "trusted"
 }
 
+func (c *Client) IsPublic() bool {
+	resp, err := c.GetServerConfig()
+	if err != nil {
+		return false
+	}
+
+	shared.Debugf("%s", resp)
+
+	jmap, err := resp.MetadataAsMap()
+	if err != nil {
+		return false
+	}
+
+	public, err := jmap.GetBool("public")
+	if err != nil {
+		return false
+	}
+
+	return public
+}
+
 func (c *Client) ListContainers() ([]shared.ContainerInfo, error) {
 	resp, err := c.get("containers?recursion=1")
 	if err != nil {
@@ -538,7 +559,7 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 		"server":      c.BaseURL,
 		"fingerprint": fingerprint}
 
-	if info.Public == 0 {
+	if !shared.InterfaceToBool(info.Public) {
 		var operation string
 
 		resp, err := c.post("images/"+fingerprint+"/secret", nil, Async)
@@ -868,8 +889,11 @@ func (c *Client) GetImageInfo(image string) (*shared.ImageInfo, error) {
 	return &info, nil
 }
 
-func (c *Client) PutImageProperties(name string, p shared.ImageProperties) error {
-	body := shared.Jmap{"properties": p}
+func (c *Client) PutImageInfo(name string, p shared.BriefImageInfo) error {
+	body := shared.Jmap{}
+	body["public"] = p.Public
+	body["properties"] = p.Properties
+
 	_, err := c.put(fmt.Sprintf("images/%s", name), body, Sync)
 	return err
 }
@@ -1067,7 +1091,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
 		}
 
-		if imageinfo.Public == 0 {
+		if !shared.InterfaceToBool(imageinfo.Public) {
 			resp, err := tmpremote.post("images/"+fingerprint+"/secret", nil, Async)
 			if err != nil {
 				return nil, err
@@ -1158,15 +1182,16 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 	return resp, nil
 }
 
-func (c *Client) LocalCopy(source string, name string, config map[string]string, profiles []string) (*Response, error) {
+func (c *Client) LocalCopy(source string, name string, config map[string]string, profiles []string, ephemeral bool) (*Response, error) {
 	body := shared.Jmap{
 		"source": shared.Jmap{
 			"type":   "copy",
 			"source": source,
 		},
-		"name":     name,
-		"config":   config,
-		"profiles": profiles,
+		"name":      name,
+		"config":    config,
+		"profiles":  profiles,
+		"ephemeral": ephemeral,
 	}
 
 	return c.post("containers", body, Async)
@@ -1427,7 +1452,7 @@ func (c *Client) GetMigrationSourceWS(container string) (*Response, error) {
 	return c.post(fmt.Sprintf("containers/%s", container), body, Async)
 }
 
-func (c *Client) MigrateFrom(name string, operation string, secrets map[string]string, config map[string]string, profiles []string, baseImage string) (*Response, error) {
+func (c *Client) MigrateFrom(name string, operation string, secrets map[string]string, config map[string]string, profiles []string, baseImage string, ephemeral bool) (*Response, error) {
 	source := shared.Jmap{
 		"type":       "migration",
 		"mode":       "pull",
@@ -1436,10 +1461,11 @@ func (c *Client) MigrateFrom(name string, operation string, secrets map[string]s
 		"base-image": baseImage,
 	}
 	body := shared.Jmap{
-		"source":   source,
-		"name":     name,
-		"config":   config,
-		"profiles": profiles,
+		"source":    source,
+		"name":      name,
+		"config":    config,
+		"profiles":  profiles,
+		"ephemeral": ephemeral,
 	}
 
 	return c.post("containers", body, Async)
@@ -1612,8 +1638,12 @@ func (c *Client) UpdateContainerConfig(container string, st shared.BriefContaine
 		"config":    st.Config,
 		"devices":   st.Devices,
 		"ephemeral": st.Ephemeral}
-	_, err := c.put(fmt.Sprintf("containers/%s", container), body, Async)
-	return err
+	resp, err := c.put(fmt.Sprintf("containers/%s", container), body, Async)
+	if err != nil {
+		return err
+	}
+
+	return c.WaitForSuccess(resp.Operation)
 }
 
 func (c *Client) ProfileCreate(p string) error {

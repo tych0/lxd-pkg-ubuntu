@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -102,9 +103,10 @@ func (s *execWs) Do() shared.OperationResult {
 	}
 
 	controlExit := make(chan bool)
-	stdEOF := make(chan bool)
+	var wgEOF sync.WaitGroup
 
 	if s.interactive {
+		wgEOF.Add(1)
 		go func() {
 			select {
 			case <-s.controlConnected:
@@ -164,9 +166,12 @@ func (s *execWs) Do() shared.OperationResult {
 				}
 			}
 		}()
-
-		shared.WebsocketMirror(s.conns[0], ptys[0], ptys[0])
+		go func() {
+			<-shared.WebsocketMirror(s.conns[0], ptys[0], ptys[0])
+			wgEOF.Done()
+		}()
 	} else {
+		wgEOF.Add(len(ttys) - 1)
 		for i := 0; i < len(ttys); i++ {
 			go func(i int) {
 				if i == 0 {
@@ -175,7 +180,7 @@ func (s *execWs) Do() shared.OperationResult {
 				} else {
 					<-shared.WebsocketSendStream(s.conns[i], ptys[i])
 					ptys[i].Close()
-					stdEOF <- true
+					wgEOF.Done()
 				}
 			}(i)
 		}
@@ -187,23 +192,18 @@ func (s *execWs) Do() shared.OperationResult {
 		s.options,
 	)
 
-	if !s.interactive {
-		ttys[0].Close()
-		ttys[1].Close()
-		ttys[2].Close()
-		<-stdEOF
-	}
-
 	for _, tty := range ttys {
 		tty.Close()
 	}
 
-	for _, pty := range ptys {
-		pty.Close()
-	}
-
 	if s.interactive && s.conns[-1] == nil {
 		controlExit <- true
+	}
+
+	wgEOF.Wait()
+
+	for _, pty := range ptys {
+		pty.Close()
 	}
 
 	return result

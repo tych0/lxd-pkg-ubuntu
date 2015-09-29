@@ -1,11 +1,6 @@
 test_config_profiles() {
-  if ! lxc image alias list | grep -q "^| testimage\s*|.*$"; then
-      if [ -e "$LXD_TEST_IMAGE" ]; then
-          lxc image import $LXD_TEST_IMAGE --alias testimage
-      else
-          ../scripts/lxd-images import busybox --alias testimage
-      fi
-  fi
+  ensure_import_testimage
+
   lxc init testimage foo
   lxc profile list | grep default
 
@@ -16,10 +11,19 @@ test_config_profiles() {
   # into the database and never let the user edit the container again.
   bad=0
   lxc config set foo raw.lxc "lxc.notaconfigkey = invalid" && bad=1 || true
-  if [ "$bad" -eq 1 ]; then
+  if [ "${bad}" -eq 1 ]; then
     echo "allowed setting a bad config value"
     false
   fi
+
+  lxc profile create stdintest
+  echo "BADCONF" | lxc profile set stdintest user.user_data -
+  lxc profile show stdintest | grep BADCONF
+  lxc profile delete stdintest
+
+  echo "BADCONF" | lxc config set foo user.user_data -
+  lxc config show foo | grep BADCONF
+  lxc config unset foo user.user_data
 
   lxc config device add foo home disk source=/mnt path=/mnt readonly=true
   lxc profile create onenic
@@ -36,7 +40,7 @@ test_config_profiles() {
   lxc profile device list onenic | grep eth0
   lxc profile device show onenic | grep lxcbr0
 
-  if [ -z "$TRAVIS_PULL_REQUEST" ]; then
+  if [ -z "${TRAVIS_PULL_REQUEST:-}" ]; then
     # test live-adding a nic
     lxc start foo
     lxc config show foo | grep -q "raw.lxc" && false
@@ -56,14 +60,14 @@ test_config_profiles() {
     lxc config device remove foo etc
     bad=0
     lxc exec foo -- ls /mnt2/hosts && bad=1 || true
-    if [ "$bad" -eq 1 ]; then
+    if [ "${bad}" -eq 1 ]; then
       echo "disk was not hot-unplugged"
       false
     fi
     lxc stop foo --force
     lxc start foo
     lxc exec foo -- ls /mnt2/hosts && bad=1 || true
-    if [ "$bad" -eq 1 ]; then
+    if [ "${bad}" -eq 1 ]; then
       echo "disk device re-appeared after stop and start"
       false
     fi
@@ -74,22 +78,26 @@ test_config_profiles() {
   lxc list user.prop=value | grep foo
   lxc config unset foo user.prop
 
+  # Test for invalid raw.lxc
+  ! lxc config set foo raw.lxc a
+  ! lxc profile set default raw.lxc a
+
   bad=0
   lxc list user.prop=value | grep foo && bad=1
-  if [ "$bad" -eq 1 ]; then
+  if [ "${bad}" -eq 1 ]; then
     echo "property unset failed"
   fi
 
   bad=0
   lxc config set foo user.prop 2>/dev/null && bad=1
-  if [ "$bad" -eq 1 ]; then
+  if [ "${bad}" -eq 1 ]; then
     echo "property set succeded when it shouldn't have"
   fi
 
   lxc delete foo
 
   # Anything below this will not get run inside Travis-CI
-  if [ -n "$TRAVIS_PULL_REQUEST" ]; then
+  if [ -n "${TRAVIS_PULL_REQUEST:-}" ]; then
     return
   fi
 

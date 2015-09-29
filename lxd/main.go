@@ -80,6 +80,10 @@ func run() error {
 		return nil
 	}
 
+	if len(shared.VarPath("unix.sock")) > 107 {
+		return fmt.Errorf("LXD_DIR is too long, must be < %d", 107-len("unix.sock"))
+	}
+
 	// Configure logging
 	syslog := ""
 	if *syslogFlag {
@@ -133,22 +137,6 @@ func run() error {
 			return err
 		}
 	}
-
-	_, err = exec.LookPath("apparmor_parser")
-	if err == nil && shared.IsDir("/sys/kernel/security/apparmor") {
-		aaEnabled = true
-	} else {
-		shared.Log.Warn("apparmor_parser binary not found or apparmor " +
-			"fs not mounted. AppArmor disabled.")
-	}
-
-	if aaEnabled && os.Getenv("LXD_SECURITY_APPARMOR") == "false" {
-		aaEnabled = false
-		shared.Log.Warn("apparmor has been manually disabled")
-	}
-
-	/* Can we create devices? */
-	checkCanMknod()
 
 	if *printGoroutines > 0 {
 		go func() {
@@ -266,6 +254,11 @@ func activateIfNeeded() error {
 	}
 
 	// Look for auto-started or previously started containers
+	d.IdmapSet, err = shared.DefaultIdmapSet()
+	if err != nil {
+		return err
+	}
+
 	containers, err := doContainersGet(d, true)
 	if err != nil {
 		return err
@@ -276,7 +269,7 @@ func activateIfNeeded() error {
 		lastState := container.State.Config["volatile.last_state.power"]
 		autoStart := container.State.ExpandedConfig["boot.autostart"]
 
-		if lastState == "RUNNING" || autoStart == "true" {
+		if lastState == "RUNNING" || lastState == "Running" || autoStart == "true" {
 			shared.Debugf("Daemon has auto-started containers, activating...")
 			_, err := lxd.NewClient(&lxd.DefaultConfig, "local")
 			return err
