@@ -1,3 +1,19 @@
+lxd (0.19-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.19)
+    - ZFS support
+    - Support for container nesting
+    - Allow setting multi-line configuration keys by reading from stdin
+    - It's now possible to make an ephemeral copy of a container
+    - Public read-only servers are now auto-detected
+    - lxd-images now supports updating existing images
+    - It is now possible to mark/unmark images as public
+    - Completely reworked testsuite
+    - Updated documentation and specifications
+    - A lot of bugfixes (no known bugs left at time of release)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 29 Sep 2015 19:57:52 -0400
+
 lxd (0.18-0ubuntu2) wily; urgency=medium
 
   * Add a lxd-startup.service systemd unit to detect whether LXD is
