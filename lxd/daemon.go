@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ import (
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
+
+var aaEnabled = true
+var runningInUserns = false
 
 const (
 	pwSaltBytes = 32
@@ -300,14 +304,27 @@ func (d *Daemon) createCmd(version string, c Command) {
 }
 
 func (d *Daemon) SetupStorageDriver() error {
-	vgName, err := d.ConfigValueGet("storage.lvm_vg_name")
+	lvmVgName, err := d.ConfigValueGet("storage.lvm_vg_name")
 	if err != nil {
 		return fmt.Errorf("Couldn't read config: %s", err)
 	}
-	if vgName != "" {
+
+	zfsPoolName, err := d.ConfigValueGet("storage.zfs_pool_name")
+	if err != nil {
+		return fmt.Errorf("Couldn't read config: %s", err)
+	}
+
+	if lvmVgName != "" {
 		d.Storage, err = newStorage(d, storageTypeLvm)
 		if err != nil {
 			shared.Logf("Could not initialize storage type LVM: %s - falling back to dir", err)
+		} else {
+			return nil
+		}
+	} else if zfsPoolName != "" {
+		d.Storage, err = newStorage(d, storageTypeZfs)
+		if err != nil {
+			shared.Logf("Could not initialize storage type ZFS: %s - falling back to dir", err)
 		} else {
 			return nil
 		}
@@ -361,7 +378,7 @@ func (d *Daemon) ListenAddresses() ([]string, error) {
 		localPort = shared.DefaultPort
 	}
 
-	if localHost == "0.0.0.0" || localHost == "::" {
+	if localHost == "0.0.0.0" || localHost == "::" || localHost == "[::]" {
 		ifaces, err := net.Interfaces()
 		if err != nil {
 			return addresses, err
@@ -508,6 +525,31 @@ func (d *Daemon) Init() error {
 			log.Ctx{"path": shared.VarPath("")})
 	}
 
+	/* Detect user namespaces */
+	runningInUserns = shared.RunningInUserNS()
+
+	/* Detect apparmor support */
+	if aaEnabled && os.Getenv("LXD_SECURITY_APPARMOR") == "false" {
+		aaEnabled = false
+		shared.Log.Warn("Per-container AppArmor profiles have been manually disabled")
+	}
+
+	if aaEnabled && !shared.IsDir("/sys/kernel/security/apparmor") {
+		aaEnabled = false
+		shared.Log.Warn("Per-container AppArmor profiles disabled because of lack of kernel support")
+	}
+
+	_, err := exec.LookPath("apparmor_parser")
+	if aaEnabled && err != nil {
+		aaEnabled = false
+		shared.Log.Warn("Per-container AppArmor profiles disabled because 'apparmor_parser' couldn't be found")
+	}
+
+	if aaEnabled && runningInUserns {
+		aaEnabled = false
+		shared.Log.Warn("Per-container AppArmor profiles disabled because LXD is running inside a user namespace")
+	}
+
 	/* Get the list of supported architectures */
 	var architectures = []int{}
 
@@ -567,7 +609,7 @@ func (d *Daemon) Init() error {
 	d.IdmapSet, err = shared.DefaultIdmapSet()
 	if err != nil {
 		shared.Log.Warn("Error reading idmap", log.Ctx{"err": err.Error()})
-		shared.Log.Warn("Operations requiring idmap will not be available")
+		shared.Log.Warn("Only privileged containers will be able to run")
 	} else {
 		shared.Log.Info("Default uid/gid map:")
 		for _, lxcmap := range d.IdmapSet.ToLxcString() {
@@ -576,11 +618,7 @@ func (d *Daemon) Init() error {
 	}
 
 	/* Initialize the database */
-	if !d.IsMock {
-		err = initializeDbObject(d, shared.VarPath("lxd.db"))
-	} else {
-		err = initializeDbObject(d, ":memory:")
-	}
+	err = initializeDbObject(d, shared.VarPath("lxd.db"))
 	if err != nil {
 		return err
 	}
@@ -746,10 +784,10 @@ func (d *Daemon) Init() error {
 
 		tcpl, err := tls.Listen("tcp", listenAddr, tlsConfig)
 		if err != nil {
-			return fmt.Errorf("cannot listen on https socket: %v", err)
+			shared.Log.Error("cannot listen on https socket, skipping...", log.Ctx{"err": err})
+		} else {
+			sockets = append(sockets, Socket{Socket: tcpl, CloseOnExit: true})
 		}
-
-		sockets = append(sockets, Socket{Socket: tcpl, CloseOnExit: true})
 	}
 
 	if !d.IsMock {
@@ -864,6 +902,8 @@ func (d *Daemon) ConfigKeyIsValid(key string) bool {
 	case "storage.lvm_vg_name":
 		return true
 	case "storage.lvm_thinpool_name":
+		return true
+	case "storage.zfs_pool_name":
 		return true
 	case "images.remote_cache_expiry":
 		return true

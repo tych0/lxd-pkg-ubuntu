@@ -23,6 +23,7 @@ core.https\_address             | string        | -                         | Ad
 core.trust\_password            | string        | -                         | Password to be provided by clients to setup a trust
 storage.lvm\_vg\_name           | string        | -                         | LVM Volume Group name to be used for container and image storage. A default Thin Pool is created using 100% of the free space in the Volume Group, unless `storage.lvm_thinpool_name` is set.
 storage.lvm\_thinpool\_name     | string        | "LXDPool"                 | LVM Thin Pool to use within the Volume Group specified in `storage.lvm_vg_name`, if the default pool parameters are undesirable.
+storage.zfs\_pool\_name         | string        | -                         | ZFS pool name
 images.remote\_cache\_expiry    | integer       | 10                        | Number of days after which an unused cached remote image will be flushed
 
 Those keys can be set using the lxc tool with:
@@ -61,12 +62,23 @@ limits.cpus                 | int           | 0 (all)           | Number of CPUs
 limits.memory               | int           | 0 (all)           | Size in MB of the memory allocation for the container
 raw.apparmor                | blob          | -                 | Apparmor profile entries to be appended to the generated profile
 raw.lxc                     | blob          | -                 | Raw LXC configuration to be appended to the generated one
+security.nesting            | boolean       | false             | Support running lxd (nested) inside the container
 security.privileged         | boolean       | false             | Runs the container in privileged mode
 user.\*                     | string        | -                 | Free form user key/value storage (can be used in search)
 volatile.\<name\>.hwaddr    | string        | -                 | Unique MAC address for a given interface (generated and set by LXD when the hwaddr field of a "nic" type device isn't set)
 volatile.base\_image        | string        | -                 | The hash of the image the container was created from, if any.
 volatile.last\_state.idmap  | string        | -                 | Serialized container uid/gid map
 volatile.last\_state.power  | string        | -                 | Container state as of last host shutdown
+
+
+Additionally, those user keys have become common with images (support isn't guaranteed):
+
+Key                         | Type          | Default           | Description
+:--                         | :---          | :------           | :----------
+user.network\_mode          | string        | dhcp              | One of "dhcp" or "link-local". Used to configure network in supported images.
+user.meta-data              | string        | -                 | Cloud-init meta-data, content is appended to seed value.
+user.user-data              | string        | #!cloud-config    | Cloud-init user-data, content is used as seed value.
+user.vendor-data            | string        | #!cloud-config    | Cloud-init vendor-data, content is used as seed value.
 
 Note that while a type is defined above as a convenience, all values are
 stored as strings and should be exported over the REST API as strings

@@ -46,9 +46,21 @@ func extractInterfaceFromConfigName(k string) (string, error) {
 func validateRawLxc(rawLxc string) error {
 	for _, line := range strings.Split(rawLxc, "\n") {
 		membs := strings.SplitN(line, "=", 2)
+		if len(membs) != 2 {
+			return fmt.Errorf("invalid raw.lxc line: %s", line)
+		}
 		if strings.ToLower(strings.Trim(membs[0], " \t")) == "lxc.logfile" {
 			return fmt.Errorf("setting lxc.logfile is not allowed")
 		}
+	}
+
+	return nil
+}
+
+func setConfigItem(c *containerLXD, key string, value string) error {
+	err := c.c.SetConfigItem(key, value)
+	if err != nil {
+		return fmt.Errorf("Failed to set LXC config: %s=%s", key, value)
 	}
 
 	return nil
@@ -377,6 +389,26 @@ func containerLXDCreateInternal(
 		return nil, err
 	}
 
+	idmap := c.IdmapSetGet()
+
+	var jsonIdmap string
+	if idmap != nil {
+		idmapBytes, err := json.Marshal(idmap.Idmap)
+		if err != nil {
+			c.Delete()
+			return nil, err
+		}
+		jsonIdmap = string(idmapBytes)
+	} else {
+		jsonIdmap = "[]"
+	}
+
+	err = c.ConfigKeySet("volatile.last_state.idmap", jsonIdmap)
+	if err != nil {
+		c.Delete()
+		return nil, err
+	}
+
 	return c, nil
 }
 
@@ -452,18 +484,45 @@ func (c *containerLXD) init() error {
 
 	personality, err := shared.ArchitecturePersonality(c.architecture)
 	if err == nil {
-		if err := c.c.SetConfigItem("lxc.arch", personality); err != nil {
+		if err := setConfigItem(c, "lxc.arch", personality); err != nil {
 			return err
 		}
 	}
 
-	err = c.c.SetConfigItem("lxc.include", fmt.Sprintf("%s/%s.common.conf", templateConfDir, templateConfBase))
+	err = setConfigItem(c, "lxc.include", fmt.Sprintf("%s/%s.common.conf", templateConfDir, templateConfBase))
 	if err != nil {
 		return err
 	}
 
-	if !c.IsPrivileged() {
-		err = c.c.SetConfigItem("lxc.include", fmt.Sprintf("%s/%s.userns.conf", templateConfDir, templateConfBase))
+	if err := setConfigItem(c, "lxc.rootfs", c.RootfsPathGet()); err != nil {
+		return err
+	}
+	if err := setConfigItem(c, "lxc.loglevel", "0"); err != nil {
+		return err
+	}
+	if err := setConfigItem(c, "lxc.utsname", c.NameGet()); err != nil {
+		return err
+	}
+	if err := setConfigItem(c, "lxc.tty", "0"); err != nil {
+		return err
+	}
+	if err := setupDevLxdMount(c); err != nil {
+		return err
+	}
+
+	for _, p := range c.profiles {
+		if err := c.applyProfile(p); err != nil {
+			return err
+		}
+	}
+
+	// base per-container config should override profile config, so we apply it second
+	if err := c.applyConfig(c.baseConfig); err != nil {
+		return err
+	}
+
+	if !c.IsPrivileged() || runningInUserns {
+		err = setConfigItem(c, "lxc.include", fmt.Sprintf("%s/%s.userns.conf", templateConfDir, templateConfBase))
 		if err != nil {
 			return err
 		}
@@ -478,7 +537,7 @@ func (c *containerLXD) init() error {
 		}
 		if !strings.Contains(auto, "cgroup") {
 			auto = fmt.Sprintf("%s %s", auto, "cgroup:mixed")
-			err = c.c.SetConfigItem("lxc.mount.auto", auto)
+			err = setConfigItem(c, "lxc.mount.auto", auto)
 			if err != nil {
 				return err
 			}
@@ -487,30 +546,14 @@ func (c *containerLXD) init() error {
 		 * mount extra /proc and /sys to work around kernel
 		 * restrictions on remounting them when covered
 		 */
-		err = c.c.SetConfigItem("lxc.mount.entry", "proc dev/.lxc/proc proc create=dir,optional")
+		err = setConfigItem(c, "lxc.mount.entry", "proc dev/.lxc/proc proc create=dir,optional")
 		if err != nil {
 			return err
 		}
-		err = c.c.SetConfigItem("lxc.mount.entry", "sys dev/.lxc/sys sysfs create=dir,optional")
+		err = setConfigItem(c, "lxc.mount.entry", "sys dev/.lxc/sys sysfs create=dir,optional")
 		if err != nil {
 			return err
 		}
-	}
-
-	if err := c.c.SetConfigItem("lxc.rootfs", c.RootfsPathGet()); err != nil {
-		return err
-	}
-	if err := c.c.SetConfigItem("lxc.loglevel", "0"); err != nil {
-		return err
-	}
-	if err := c.c.SetConfigItem("lxc.utsname", c.NameGet()); err != nil {
-		return err
-	}
-	if err := c.c.SetConfigItem("lxc.tty", "0"); err != nil {
-		return err
-	}
-	if err := setupDevLxdMount(c.c); err != nil {
-		return err
 	}
 
 	/*
@@ -522,26 +565,15 @@ func (c *containerLXD) init() error {
 			curProfile := aaProfile()
 			shared.Debugf("Running %s in current profile %s (nested container)", c.name, curProfile)
 			curProfile = strings.TrimSuffix(curProfile, " (enforce)")
-			if err := c.c.SetConfigItem("lxc.aa_profile", curProfile); err != nil {
+			if err := setConfigItem(c, "lxc.aa_profile", curProfile); err != nil {
 				return err
 			}
-		} else if err := c.c.SetConfigItem("lxc.aa_profile", AAProfileName(c)); err != nil {
+		} else if err := setConfigItem(c, "lxc.aa_profile", AAProfileFull(c)); err != nil {
 			return err
 		}
 	}
 
-	if err := c.c.SetConfigItem("lxc.seccomp", SeccompProfilePath(c)); err != nil {
-		return err
-	}
-
-	for _, p := range c.profiles {
-		if err := c.applyProfile(p); err != nil {
-			return err
-		}
-	}
-
-	// base per-container config should override profile config, so we apply it second
-	if err := c.applyConfig(c.baseConfig); err != nil {
+	if err := setConfigItem(c, "lxc.seccomp", SeccompProfilePath(c)); err != nil {
 		return err
 	}
 
@@ -560,11 +592,10 @@ func (c *containerLXD) init() error {
 	}
 
 	if !c.IsPrivileged() {
+		if c.daemon.IdmapSet == nil {
+			return fmt.Errorf("LXD doesn't have a uid/gid allocation. In this mode, only privileged containers are supported.")
+		}
 		c.idmapset = c.daemon.IdmapSet // TODO - per-tenant idmaps
-	}
-
-	if err := c.mountShared(); err != nil {
-		return err
 	}
 
 	if err := c.applyIdmapSet(); err != nil {
@@ -624,6 +655,10 @@ func (c *containerLXD) Start() error {
 
 	if err := SeccompCreateProfile(c); err != nil {
 		c.StorageStop()
+		return err
+	}
+
+	if err := c.mountShared(); err != nil {
 		return err
 	}
 
@@ -912,6 +947,12 @@ func (c *containerLXD) Delete() error {
 }
 
 func (c *containerLXD) Rename(newName string) error {
+	oldName := c.NameGet()
+
+	if !c.IsSnapshot() && !shared.ValidHostname(newName) {
+		return fmt.Errorf("Invalid container name")
+	}
+
 	if c.IsRunning() {
 		return fmt.Errorf("renaming of running container not allowed")
 	}
@@ -926,11 +967,11 @@ func (c *containerLXD) Rename(newName string) error {
 		}
 	}
 
-	if err := dbContainerRename(c.daemon.db, c.NameGet(), newName); err != nil {
+	if err := dbContainerRename(c.daemon.db, oldName, newName); err != nil {
 		return err
 	}
 
-	results, err := dbContainerGetSnapshots(c.daemon.db, c.NameGet())
+	results, err := dbContainerGetSnapshots(c.daemon.db, oldName)
 	if err != nil {
 		return err
 	}
@@ -940,7 +981,7 @@ func (c *containerLXD) Rename(newName string) error {
 		if err != nil {
 			shared.Log.Error(
 				"containerDeleteSnapshots: Failed to load the snapshotcontainer",
-				log.Ctx{"container": c.NameGet(), "snapshot": sname})
+				log.Ctx{"container": oldName, "snapshot": sname})
 
 			continue
 		}
@@ -949,7 +990,7 @@ func (c *containerLXD) Rename(newName string) error {
 		if err := sc.Rename(newSnapshotName); err != nil {
 			shared.Log.Error(
 				"containerDeleteSnapshots: Failed to rename a snapshotcontainer",
-				log.Ctx{"container": c.NameGet(), "snapshot": sname, "err": err})
+				log.Ctx{"container": oldName, "snapshot": sname, "err": err})
 		}
 	}
 
@@ -1095,7 +1136,7 @@ func (c *containerLXD) ConfigReplace(newContainerArgs containerLXDArgs) error {
 	}
 
 	if err = dbContainerConfigInsert(tx, c.id, newContainerArgs.Config); err != nil {
-		shared.Debugf("Error inserting configuration for container %s", c.NameGet())
+		shared.Debugf("Error inserting configuration for container %s: %s", c.NameGet(), err)
 		tx.Rollback()
 		return err
 	}
@@ -1423,7 +1464,7 @@ func (c *containerLXD) AttachMount(m shared.Device) error {
 	}
 
 	entry := fmt.Sprintf("%s %s %s %s 0 0", source, dest, fstype, opts)
-	if err := c.c.SetConfigItem("lxc.mount.entry", entry); err != nil {
+	if err := setConfigItem(c, "lxc.mount.entry", entry); err != nil {
 		return err
 	}
 
@@ -1472,13 +1513,13 @@ func (c *containerLXD) applyConfig(config map[string]string) error {
 				return fmt.Errorf("Bad cpu limit: %s\n", v)
 			}
 			cpuset := fmt.Sprintf("0-%d", vint-1)
-			err = c.c.SetConfigItem("lxc.cgroup.cpuset.cpus", cpuset)
+			err = setConfigItem(c, "lxc.cgroup.cpuset.cpus", cpuset)
 		case "limits.memory":
-			err = c.c.SetConfigItem("lxc.cgroup.memory.limit_in_bytes", v)
+			err = setConfigItem(c, "lxc.cgroup.memory.limit_in_bytes", v)
 
 		default:
 			if strings.HasPrefix(k, "environment.") {
-				c.c.SetConfigItem("lxc.environment", fmt.Sprintf("%s=%s", strings.TrimPrefix(k, "environment."), v))
+				setConfigItem(c, "lxc.environment", fmt.Sprintf("%s=%s", strings.TrimPrefix(k, "environment."), v))
 			}
 
 			/* Things like security.privileged need to be propagated */
@@ -1700,7 +1741,7 @@ func (c *containerLXD) applyIdmapSet() error {
 	}
 	lines := c.idmapset.ToLxcString()
 	for _, line := range lines {
-		err := c.c.SetConfigItem("lxc.id_map", line+"\n")
+		err := setConfigItem(c, "lxc.id_map", line+"\n")
 		if err != nil {
 			return err
 		}
@@ -1726,7 +1767,7 @@ func (c *containerLXD) applyDevices() error {
 			return fmt.Errorf("Failed configuring device %s: %s\n", name, err)
 		}
 		for _, line := range configs {
-			err := c.c.SetConfigItem(line[0], line[1])
+			err := setConfigItem(c, line[0], line[1])
 			if err != nil {
 				return fmt.Errorf("Failed configuring device %s: %s\n", name, err)
 			}
@@ -1870,7 +1911,7 @@ func (c *containerLXD) mountShared() error {
 			return err
 		}
 	}
-	return c.c.SetConfigItem("lxc.mount.entry", entry)
+	return setConfigItem(c, "lxc.mount.entry", entry)
 }
 
 func (c *containerLXD) Checkpoint(opts lxc.CheckpointOptions) error {
