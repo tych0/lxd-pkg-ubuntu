@@ -1,0 +1,45 @@
+From 7c3407899a008c9f31ba9a8a6ef0f87c9ea2c47f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@ubuntu.com>
+Date: Wed, 30 Sep 2015 12:03:56 -0400
+Subject: Allow comments and empty lines in raw.lxc
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since we use load_config ot load raw.lxc, empty lines and comments
+aren't a problem and so can be allowed in raw.lxc.
+
+Reported-by: Chuck Short
+Signed-off-by: Stéphane Graber <stgraber@ubuntu.com>
+---
+ lxd/container.go | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/lxd/container.go b/lxd/container.go
+index 192fae3..e9b677f 100644
+--- a/lxd/container.go
++++ b/lxd/container.go
+@@ -45,10 +45,23 @@ func extractInterfaceFromConfigName(k string) (string, error) {
+ 
+ func validateRawLxc(rawLxc string) error {
+ 	for _, line := range strings.Split(rawLxc, "\n") {
++		// Ignore empty lines
++		if len(line) == 0 {
++			continue
++		}
++
++		// Ignore comments
++		if strings.HasPrefix(line, "#") {
++			continue
++		}
++
++		// Ensure the format is valid
+ 		membs := strings.SplitN(line, "=", 2)
+ 		if len(membs) != 2 {
+ 			return fmt.Errorf("invalid raw.lxc line: %s", line)
+ 		}
++
++		// Blacklist some keys
+ 		if strings.ToLower(strings.Trim(membs[0], " \t")) == "lxc.logfile" {
+ 			return fmt.Errorf("setting lxc.logfile is not allowed")
+ 		}
