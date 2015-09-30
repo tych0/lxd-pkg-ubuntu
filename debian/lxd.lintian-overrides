@@ -6,7 +6,9 @@ spelling-error-in-binary usr/bin/lxd collapsable collapsible
 spelling-error-in-binary usr/bin/lxd misformed malformed
 spelling-error-in-binary usr/bin/lxd unuseful useless
 spelling-error-in-binary usr/bin/lxd Nam Name
+spelling-error-in-binary usr/bin/lxd homogenous homogeneous
 
 # It's Go, not much we can do about this
+embedded-library usr/bin/lxd: libyaml
 embedded-library usr/bin/lxd: sqlite
 hardening-no-relro usr/lib/lxd/lxd-bridge-proxy

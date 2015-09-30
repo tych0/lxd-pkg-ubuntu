@@ -1,0 +1,2 @@
+# It's Go, not much we can do about this
+embedded-library usr/bin/lxc: libyaml
