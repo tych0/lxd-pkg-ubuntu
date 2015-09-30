@@ -1,3 +1,11 @@
+lxd (0.19-0ubuntu2) wily; urgency=medium
+
+  * Cherry-pick two upstream bugfixes (regressions in 0.19):
+    - Fix the testsuite failing when GOPATH isn't set
+    - Allow empty lines and comments in raw.lxc
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 30 Sep 2015 13:30:45 -0400
+
 lxd (0.19-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.19)
