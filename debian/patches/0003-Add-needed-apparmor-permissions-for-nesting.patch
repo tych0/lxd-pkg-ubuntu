@@ -1,0 +1,33 @@
+From 0893092b0dbe8d6799452bd6d61de2c9aab31263 Mon Sep 17 00:00:00 2001
+From: Serge Hallyn <serge.hallyn@ubuntu.com>
+Date: Wed, 30 Sep 2015 12:33:41 -0500
+Subject: Add needed apparmor permissions for nesting
+
+In order to attach to a container (nested), we need 'ptrace'.
+
+In order for lxc-stop to work, we need 'signal'.
+
+The stock lxc nesting profile provides these by inheriting them
+from the 'start-container' profile.  We hadn't added them to the
+apparmor code for containers with security.nesting=1.  Add them.
+
+Signed-off-by: Serge Hallyn <serge.hallyn@ubuntu.com>
+---
+ lxd/apparmor.go | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/lxd/apparmor.go b/lxd/apparmor.go
+index 47ef465..94659f1 100644
+--- a/lxd/apparmor.go
++++ b/lxd/apparmor.go
+@@ -42,6 +42,10 @@ const NESTING_AA_PROFILE = `
+   mount,
+   mount options=bind /var/lib/lxd/shmounts/** -> /var/lib/lxd/**,
+   change_profile -> lxc-container-default,
++  # lxc-container-default-with-nesting also inherited these
++  # from start-container, and seems to need them.
++  ptrace,
++  signal,
+ `
+ 
+ const DEFAULT_AA_PROFILE = `

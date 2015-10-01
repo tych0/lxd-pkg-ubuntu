@@ -1,0 +1,24 @@
+From cdf9e4dd3272f17bbb0787f6c6a85fb0fcc66836 Mon Sep 17 00:00:00 2001
+From: Michael McCracken <mike.mccracken@canonical.com>
+Date: Wed, 30 Sep 2015 15:44:40 -0700
+Subject: scripts: Don't attempt to delete nonexistent file
+
+Signed-off-by: Michael McCracken <mike.mccracken@canonical.com>
+---
+ scripts/lxd-setup-lvm-storage | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/lxd-setup-lvm-storage b/scripts/lxd-setup-lvm-storage
+index 12e2a8c..4e5c270 100755
+--- a/scripts/lxd-setup-lvm-storage
++++ b/scripts/lxd-setup-lvm-storage
+@@ -160,7 +160,8 @@ def destroy_image(args, lxd):
+     print("Detaching loop device {}".format(pvname))
+     check_output("losetup -d {}".format(pvname), shell=True)
+     print("Deleting backing file {}".format(imgfname))
+-    check_output("rm {}".format(imgfname), shell=True)
++    if os.path.exists(imgfname):
++        check_output("rm '{}'".format(imgfname), shell=True)
+ 
+         
+ def do_main():

@@ -1,2 +1,6 @@
 0001-tests-Don-t-fail-when-GOPATH-isn-t-set.patch
 0002-Allow-comments-and-empty-lines-in-raw.lxc.patch
+0003-Add-needed-apparmor-permissions-for-nesting.patch
+0004-Start-container-storage-before-publish.patch
+0005-tests-Don-t-fail-on-kernel-race-conditions.patch
+0006-scripts-Don-t-attempt-to-delete-nonexistent-file.patch
