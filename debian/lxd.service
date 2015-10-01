@@ -9,7 +9,8 @@ KillMode=process
 TimeoutStopSec=40
 KillSignal=SIGPWR
 Restart=on-failure
-LimitNOFILE=65536
+LimitNOFILE=-1
+LimitNPROC=-1
 
 [Install]
 Also=lxd-startup.service lxd-unix.socket
