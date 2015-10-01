@@ -1,3 +1,14 @@
+lxd (0.19-0ubuntu4) wily; urgency=medium
+
+  * Cherry-pick another upstream bugfix:
+    - Fix image show/edit handling of the public flag
+  * Add an hourly cron job (only runs if LXD is running) which will
+    update any image that was imported with the --sync flag.
+  * Set both NPROC and NOFILE to their maximum value (-1) in the LXD
+    systemd unit. This ensures consistent behavior on all init systems.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 01 Oct 2015 17:46:10 -0400
+
 lxd (0.19-0ubuntu3) wily; urgency=medium
 
   * Cherry-pick a few more usptream bugfixes:
