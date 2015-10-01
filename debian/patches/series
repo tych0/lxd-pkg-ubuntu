@@ -4,3 +4,4 @@
 0004-Start-container-storage-before-publish.patch
 0005-tests-Don-t-fail-on-kernel-race-conditions.patch
 0006-scripts-Don-t-attempt-to-delete-nonexistent-file.patch
+0007-Fix-image-show-edit.patch
