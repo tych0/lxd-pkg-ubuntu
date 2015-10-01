@@ -1,0 +1,18 @@
+#!/bin/sh -eu
+
+# This cronjob will update any image in the local LXD image store which
+# was imported with the --sync flag set.
+#
+# As LXD is socket activated on systemd, this cron job will only trigger
+# if LXD is already running or if FORCE_IMAGE_SYNC is set to true in
+# /etc/default/lxd
+
+FORCE_IMAGE_SYNC="false"
+
+[ -e /etc/default/lxd ] && . /etc/default/lxd
+
+if type systemctl >/dev/null 2>&1 && ! systemctl -q is-active lxd; then
+    [ "${FORCE_IMAGE_SYNC}" != "true" ] && exit 0
+fi
+
+exec lxd-images --quiet sync
