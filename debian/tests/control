@@ -1,5 +1,6 @@
 Tests: exercise
-Depends: busybox-static,
+Depends: acl,
+         busybox-static,
          curl,
          gccgo [powerpc ppc64el],
          golang-go [i386 amd64 armhf arm64],
@@ -8,5 +9,6 @@ Depends: busybox-static,
          gettext,
          make,
          sqlite3,
+         uuid-runtime,
          @
 Restrictions: needs-root allow-stderr
