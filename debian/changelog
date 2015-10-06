@@ -1,3 +1,14 @@
+lxd (0.19-0ubuntu5) wily; urgency=medium
+
+  * Cherry-pick a few more upstream bugfixes:
+    - CVE-2015-1340: Fix race condition in uidshift (LP: #1502270)
+    - Compare IPs more intelligently when changing core.https_address
+    - Drop an unused container property
+    - Make cached images and copied images private by default
+  * Update debian/tests/control to depend on everything that we need
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 06 Oct 2015 13:20:58 +0100
+
 lxd (0.19-0ubuntu4) wily; urgency=medium
 
   * Cherry-pick another upstream bugfix:
