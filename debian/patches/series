@@ -5,3 +5,7 @@
 0005-tests-Don-t-fail-on-kernel-race-conditions.patch
 0006-scripts-Don-t-attempt-to-delete-nonexistent-file.patch
 0007-Fix-image-show-edit.patch
+0008-compare-IPs-more-intelligently.patch
+0009-CVE-2015-1340-Fix-race-condition-between-fchown-and-.patch
+0010-Drop-unused-container-property.patch
+0011-Make-downloaded-images-private-by-default.patch
