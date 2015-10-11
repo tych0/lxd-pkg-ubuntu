@@ -25,12 +25,12 @@ add_groups()
         # UID allocation
         NEXT_UID=100000
         while read line; do
-            [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
-
             OLD_IFS=$IFS
             IFS=":"
             set -- $line
             IFS=$OLD_IFS
+
+            [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
 
             LAST=$(($2+$3))
             [ "$LAST" -gt "$NEXT_UID" ] && NEXT_UID=$LAST
@@ -41,12 +41,12 @@ add_groups()
         # GID allocation
         NEXT_GID=100000
         while read line; do
-            [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
-
             OLD_IFS=$IFS
             IFS=":"
             set -- $line
             IFS=$OLD_IFS
+
+            [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
 
             LAST=$(($2+$3))
             [ "$LAST" -gt "$NEXT_GID" ] && NEXT_GID=$LAST
