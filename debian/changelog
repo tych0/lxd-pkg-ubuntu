@@ -1,3 +1,17 @@
+lxd (0.20-0ubuntu1) wily; urgency=medium
+
+  * New upstream release (0.20) (LP: #1487756)
+    - Fix LVM copy/move of stopped containers (LP: #1499359)
+    - Container restart is now implemented as stop + start (reloads all config)
+    - Config key=value can now be passed at launch time using --config/-c
+    - A new "pause" command is now available to temporarily freeze a container
+    - Cached images are now private by default
+    - You can now publish a remote container into the local image store
+    - It is now possible to add character or block devices to a container
+    - The image size is now shown in the image list
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 14 Oct 2015 17:40:47 -0700
+
 lxd (0.19-0ubuntu5) wily; urgency=medium
 
   * Cherry-pick a few more upstream bugfixes:
