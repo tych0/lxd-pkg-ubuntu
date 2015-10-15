@@ -1,3 +1,9 @@
+lxd (0.20-0ubuntu2) wily; urgency=medium
+
+  * Add new test dependencies.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 14 Oct 2015 23:36:25 -0700
+
 lxd (0.20-0ubuntu1) wily; urgency=medium
 
   * New upstream release (0.20) (LP: #1487756)
