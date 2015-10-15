@@ -24,6 +24,14 @@ func (a ByName) Swap(i, j int) {
 }
 
 func (a ByName) Less(i, j int) bool {
+	if a[i][0] == "" {
+		return false
+	}
+
+	if a[j][0] == "" {
+		return true
+	}
+
 	return a[i][0] < a[j][0]
 }
 
@@ -118,7 +126,7 @@ func listContainers(cinfos []shared.ContainerInfo, filters []string, listsnaps b
 			continue
 		}
 
-		if cstate.Status.StatusCode == shared.Running {
+		if cstate.Status.StatusCode == shared.Running || cstate.Status.StatusCode == shared.Frozen {
 			ipv4s := []string{}
 			ipv6s := []string{}
 			for _, ip := range cstate.Status.Ips {
@@ -184,9 +192,7 @@ func (c *listCmd) run(config *lxd.Config, args []string) error {
 
 	filters := []string{}
 
-	if len(args) == 0 {
-		remote = config.DefaultRemote
-	} else {
+	if len(args) != 0 {
 		filters = args
 		if strings.Contains(args[0], ":") {
 			remote, name = config.ParseRemoteAndContainer(args[0])
@@ -195,6 +201,10 @@ func (c *listCmd) run(config *lxd.Config, args []string) error {
 			remote = config.DefaultRemote
 			name = args[0]
 		}
+	}
+
+	if remote == "" {
+		remote = config.DefaultRemote
 	}
 
 	d, err := lxd.NewClient(config, remote)

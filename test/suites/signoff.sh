@@ -1,12 +1,14 @@
+#!/bin/sh
+
 test_commits_signed_off() {
   # Skip the test when not running from a git repository
   if ! git status; then
     return
   fi
 
-  # Don't run this test if we're not in travis; we don't want to muck with
-  # people's local repos.
-  if [ -z "${TRAVIS_PULL_REQUEST:-}" ]; then
+  # Don't run this test if we're not on a test runner as we don't want
+  # to muck with people's local repos.
+  if [ -z "${LXD_JENKINS:-}" ]; then
     return
   fi
 

@@ -36,11 +36,11 @@ var imageEditHelp string = gettext.Gettext(
 
 func (c *imageCmd) usage() string {
 	return gettext.Gettext(
-		`Manipulate container images
+		`Manipulate container images.
 
 lxc image import <tarball> [rootfs tarball] [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]
 
-lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-alias] [--public]
+lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-aliases] [--public]
 lxc image delete [remote:]<image>
 lxc image edit [remote:]<image>
 lxc image export [remote:]<image>
@@ -216,7 +216,7 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		if shared.InterfaceToBool(info) {
 			public = gettext.Gettext("yes")
 		}
-		fmt.Printf(gettext.Gettext("Size: %.2vMB")+"\n", float64(info.Size)/1024.0/1024.0)
+		fmt.Printf(gettext.Gettext("Size: %.2fMB")+"\n", float64(info.Size)/1024.0/1024.0)
 		arch, _ := shared.ArchitectureName(info.Architecture)
 		fmt.Printf(gettext.Gettext("Architecture: %s")+"\n", arch)
 		fmt.Printf(gettext.Gettext("Public: %s")+"\n", public)
@@ -266,6 +266,10 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			} else {
 				properties = append(properties, arg)
 			}
+		}
+
+		if remote == "" {
+			remote = config.DefaultRemote
 		}
 
 		if imageFile == "" {
@@ -407,6 +411,7 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		if inName == "" {
 			return errArgs
 		}
+
 		d, err := lxd.NewClient(config, remote)
 		if err != nil {
 			return err
@@ -506,7 +511,8 @@ func showImages(images []shared.ImageInfo) error {
 		const layout = "Jan 2, 2006 at 3:04pm (MST)"
 		uploaded := time.Unix(image.UploadDate, 0).Format(layout)
 		arch, _ := shared.ArchitectureName(image.Architecture)
-		data = append(data, []string{shortest, fp, public, description, arch, uploaded})
+		size := fmt.Sprintf("%.2fMB", float64(image.Size)/1024.0/1024.0)
+		data = append(data, []string{shortest, fp, public, description, arch, size, uploaded})
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
@@ -517,6 +523,7 @@ func showImages(images []shared.ImageInfo) error {
 		gettext.Gettext("PUBLIC"),
 		gettext.Gettext("DESCRIPTION"),
 		gettext.Gettext("ARCH"),
+		gettext.Gettext("SIZE"),
 		gettext.Gettext("UPLOAD DATE")})
 	sort.Sort(ByName(data))
 	table.AppendBulk(data)
