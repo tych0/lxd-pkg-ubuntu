@@ -1,3 +1,10 @@
+lxd (0.20-0ubuntu3) wily; urgency=medium
+
+  * Cherry-pick upstream bugfix:
+    - Fix non-interactive exec race condition
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 15 Oct 2015 10:21:31 -0700
+
 lxd (0.20-0ubuntu2) wily; urgency=medium
 
   * Add new test dependencies.
