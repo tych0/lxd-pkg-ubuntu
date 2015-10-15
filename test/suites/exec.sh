@@ -1,8 +1,6 @@
-test_concurrent_exec() {
-  if [ -n "${TRAVIS_PULL_REQUEST:-}" ]; then
-    return
-  fi
+#!/bin/sh
 
+test_concurrent_exec() {
   ensure_import_testimage
 
   name=x1
@@ -10,19 +8,19 @@ test_concurrent_exec() {
   lxc list ${name} | grep RUNNING
 
   exec_container() {
-    echo abc${1} | lxc exec ${name} -- cat | grep abc
+    echo "abc${1}" | lxc exec "${name}" -- cat | grep abc
   }
 
   PIDS=""
-  for i in `seq 1 50`; do
-    exec_container ${i} 2>&1 > ${LXD_DIR}/exec-${i}.out &
+  for i in $(seq 1 50); do
+    exec_container "${i}" > "${LXD_DIR}/exec-${i}.out" 2>&1 &
     PIDS="${PIDS} $!"
   done
 
   for pid in ${PIDS}; do
-    wait ${pid}
+    wait "${pid}"
   done
 
-  lxc stop ${name} --force
-  lxc delete ${name}
+  lxc stop "${name}" --force
+  lxc delete "${name}"
 }
