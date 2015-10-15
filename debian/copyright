@@ -75,6 +75,10 @@ Files: dist/src/github.com/stretchr/testify/*
 Copyright: 2012 - 2013 Mat Ryer and Tyler Bunnell
 License: Expat
 
+Files: dist/src/github.com/syndtr/gocapability/*
+Copyright: Copyright 2013 Suryandaru Triandana <syndtr@gmail.com>
+License: BSD-2-clause
+
 Files: dist/src/golang.org/x/crypto/*
 Copyright: 2009 The Go Authors.
 License: BSD-3-clause
