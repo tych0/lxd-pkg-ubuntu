@@ -1,3 +1,10 @@
+lxd (0.20-0ubuntu4) wily; urgency=medium
+
+  * Use dh-golang. (LP: #1481507)
+  * Fix some lintian warnings (debconf related)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 16 Oct 2015 21:32:41 -0700
+
 lxd (0.20-0ubuntu3) wily; urgency=medium
 
   * Cherry-pick upstream bugfix:
