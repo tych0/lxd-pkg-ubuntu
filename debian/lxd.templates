@@ -16,66 +16,67 @@ _Description: Do you want to use an existing bridge?
 Template: lxd/bridge-name
 Type: string
 Default: lxdbr0
-_Description: Name of the bridge interface
+_Description: Bridge interface name:
 
 Template: lxd/bridge-dnsmasq
 Type: string
-_Description: Path to a dnsmasq file to include into the bridge configuration
+_Description: Path to dnsmasq config:
+ When provided, this is included in the bridge configuration.
 
 Template: lxd/bridge-domain
 Type: string
 Default: lxd
-_Description: Choose a domain name (empty for none)
+_Description: Domain name:
 
 Template: lxd/bridge-ipv4
 Type: boolean
 Default: false
-_Description: Setup an IPv4 subnet
+_Description: Do you want to setup an IPv4 subnet?
 
 Template: lxd/bridge-ipv4-address
 Type: string
-_Description: IPv4 address
+_Description: IPv4 address:
 
 Template: lxd/bridge-ipv4-netmask
 Type: string
-_Description: IPv4 netmask
+_Description: IPv4 netmask:
 
 Template: lxd/bridge-ipv4-dhcp-first
 Type: string
-_Description: First DHCP IPv4 address
+_Description: First DHCP address:
 
 Template: lxd/bridge-ipv4-dhcp-last
 Type: string
-_Description: Last DHCP IPv4 address
+_Description: Last DHCP address:
 
 Template: lxd/bridge-ipv4-dhcp-leases
 Type: string
-_Description: Max number of DHCP clients
+_Description: Max number of DHCP clients:
 
 Template: lxd/bridge-ipv4-nat
 Type: boolean
 Default: true
-_Description: NAT IPv4 traffic
+_Description: Do you want to NAT the IPv4 traffic?
 
 Template: lxd/bridge-ipv6
 Type: boolean
 Default: false
-_Description: Setup an IPv6 subnet
+_Description: Do you want to setup an IPv6 subnet?
 
 Template: lxd/bridge-ipv6-address
 Type: string
-_Description: IPv6 address
+_Description: IPv6 address:
 
 Template: lxd/bridge-ipv6-netmask
 Type: string
-_Description: IPv6 netmask (CIDR)
+_Description: IPv6 netmask:
 
 Template: lxd/bridge-ipv6-nat
 Type: boolean
 Default: false
-_Description: NAT IPv6 traffic
+_Description: Do you want to NAT the IPv6 traffic?
 
 Template: lxd/bridge-http-proxy
 Type: boolean
 Default: true
-_Description: Setup an HTTP proxy
+_Description: Do you want to setup an HTTP proxy?

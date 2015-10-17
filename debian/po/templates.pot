@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: lxd\n"
 "Report-Msgid-Bugs-To: lxd@packages.debian.org\n"
-"POT-Creation-Date: 2015-10-14 17:47-0700\n"
+"POT-Creation-Date: 2015-10-17 00:13-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -38,89 +38,95 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../lxd.templates:4001
-msgid "Name of the bridge interface"
+msgid "Bridge interface name:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:5001
-msgid "Path to a dnsmasq file to include into the bridge configuration"
+msgid "Path to dnsmasq config:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../lxd.templates:5001
+msgid "When provided, this is included in the bridge configuration."
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:6001
-msgid "Choose a domain name (empty for none)"
+msgid "Domain name:"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../lxd.templates:7001
-msgid "Setup an IPv4 subnet"
+msgid "Do you want to setup an IPv4 subnet?"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:8001
-msgid "IPv4 address"
+msgid "IPv4 address:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:9001
-msgid "IPv4 netmask"
+msgid "IPv4 netmask:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:10001
-msgid "First DHCP IPv4 address"
+msgid "First DHCP address:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:11001
-msgid "Last DHCP IPv4 address"
+msgid "Last DHCP address:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:12001
-msgid "Max number of DHCP clients"
+msgid "Max number of DHCP clients:"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../lxd.templates:13001
-msgid "NAT IPv4 traffic"
+msgid "Do you want to NAT the IPv4 traffic?"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../lxd.templates:14001
-msgid "Setup an IPv6 subnet"
+msgid "Do you want to setup an IPv6 subnet?"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:15001
-msgid "IPv6 address"
+msgid "IPv6 address:"
 msgstr ""
 
 #. Type: string
 #. Description
 #: ../lxd.templates:16001
-msgid "IPv6 netmask (CIDR)"
+msgid "IPv6 netmask:"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../lxd.templates:17001
-msgid "NAT IPv6 traffic"
+msgid "Do you want to NAT the IPv6 traffic?"
 msgstr ""
 
 #. Type: boolean
 #. Description
 #: ../lxd.templates:18001
-msgid "Setup an HTTP proxy"
+msgid "Do you want to setup an HTTP proxy?"
 msgstr ""
