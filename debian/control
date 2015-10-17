@@ -7,6 +7,7 @@ Homepage: https://linuxcontainers.org/
 Vcs-Git: git://github.com/lxc/lxd-pkg-ubuntu
 Vcs-Browser: https://github.com/lxc/lxd-pkg-ubuntu
 Build-Depends: debhelper (>= 9),
+               dh-golang,
                dh-systemd,
                gccgo [powerpc ppc64el],
                golang-go [i386 amd64 armhf arm64],
@@ -19,6 +20,7 @@ XS-Testsuite: autopkgtest
 Package: lxd-client
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
+Built-Using: ${misc:Built-Using}
 Suggests: lxd
 Description: Container hypervisor based on LXC - client
  LXD offers a REST API to remotely manage containers over the network,
@@ -38,6 +40,7 @@ Depends: acl,
          xz-utils,
          ${misc:Depends},
          ${shlibs:Depends}
+Built-Using: ${misc:Built-Using}
 Recommends: lxd-client
 Suggests: criu, lxd-tools
 Description: Container hypervisor based on LXC - daemon
@@ -49,6 +52,7 @@ Description: Container hypervisor based on LXC - daemon
 Package: lxd-tools
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
+Built-Using: ${misc:Built-Using}
 Description: Container hypervisor based on LXC - extra tools
  LXD offers a REST API to remotely manage containers over the network,
  using an image based workflow and with support for live migration.

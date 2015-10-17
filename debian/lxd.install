@@ -1,8 +1,12 @@
 debian/*.service lib/systemd/system/
 debian/*.socket lib/systemd/system/
+debian/cron/lxd etc/cron.hourly/
+
 usr/bin/lxd
 usr/bin/lxd-bridge-proxy usr/lib/lxd/
-usr/bin/lxd-images
-usr/lib/lxd/lxd-bridge
+
+lxd-bridge/lxd-bridge usr/lib/lxd/
+scripts/lxd-images usr/bin/
+
 usr/share/man/man1/lxd-images.1
 usr/share/man/man1/lxd.1

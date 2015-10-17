@@ -7,38 +7,33 @@
 PKGDIR=debian/tmp
 VERSION=$(shell grep "var Version" $(CURDIR)/shared/flex.go | sed -r -e 's/.*"([0-9\.]*)"/\1/')
 
-export GOPATH := $(CURDIR)/dist/
-export PATH := $(PATH):$(GOPATH)/bin/
+# temporary build path (see http://golang.org/doc/code.html#GOPATH)
+export DH_GOPKG := github.com/lxc/lxd
+export GOPATH := $(CURDIR)/obj-$(DEB_BUILD_GNU_TYPE)
 
 %:
-	dh $@ --with systemd
+	dh $@ --with systemd --buildsystem=golang --with=golang
 
-override_dh_auto_build: ;
+# Ugly workaround for bundled dependencies
+override_dh_auto_build:
+	mv ${GOPATH}/src/github.com/lxc/lxd ${GOPATH}/lxd.tmp
+	rm -Rf ${GOPATH}/src
+	cp -R dist/src ${GOPATH}
+	rm ${GOPATH}/src/github.com/lxc/lxd
+	mv ${GOPATH}/lxd.tmp ${GOPATH}/src/github.com/lxc/lxd
+
+	go install -v github.com/lxc/lxd/lxc
+	go install -v github.com/lxc/lxd/lxd
+	go install -v github.com/lxc/lxd/fuidshift
+	go install -v github.com/lxc/lxd/lxd-bridge/lxd-bridge-proxy
 
 override_dh_install:
-	# Build everything
-	go install -v -x github.com/lxc/lxd/fuidshift
-	go install -v -x github.com/lxc/lxd/lxc
-	go install -v -x github.com/lxc/lxd/lxd
-	go install -v -x github.com/lxc/lxd/lxd-bridge/lxd-bridge-proxy
-
-	# Install the various binaries
-	mkdir -p $(PKGDIR)/usr/bin $(PKGDIR)/usr/share/ $(PKGDIR)/usr/lib/lxd
-	cp $(GOPATH)/bin/* $(PKGDIR)/usr/bin/
-	cp scripts/lxd-images $(PKGDIR)/usr/bin/
-	cp lxd-bridge/lxd-bridge $(PKGDIR)/usr/lib/lxd/
-
 	# Install the manpages
 	mkdir -p $(PKGDIR)/usr/share/man/man1/
 	help2man $(PKGDIR)/usr/bin/fuidshift -n "uid/gid shifter" --no-info > $(PKGDIR)/usr/share/man/man1/fuidshift.1
 	help2man $(PKGDIR)/usr/bin/lxc -n "The container hypervisor - client" --no-info > $(PKGDIR)/usr/share/man/man1/lxc.1
 	help2man $(PKGDIR)/usr/bin/lxd -n "The container hypervisor - daemon" --no-info > $(PKGDIR)/usr/share/man/man1/lxd.1
-	help2man $(PKGDIR)/usr/bin/lxd-images -n "The container hypervisor - image importer" --version-string=$(VERSION) --no-info > $(PKGDIR)/usr/share/man/man1/lxd-images.1
-
-	# Install cron job
-	mkdir -p ${PKGDIR}/etc/cron.hourly/
-	cp debian/lxd.cron ${PKGDIR}/etc/cron.hourly/
-	chmod 755 ${PKGDIR}/etc/cron.hourly/
+	help2man scripts/lxd-images -n "The container hypervisor - image importer" --version-string=$(VERSION) --no-info > $(PKGDIR)/usr/share/man/man1/lxd-images.1
 
 	# Trigger normal dh_install
 	dh_install
