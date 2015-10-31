@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/lxc/lxd/shared"
 
@@ -45,7 +46,7 @@ func (s *storageBtrfs) Init(config map[string]interface{}) (storage, error) {
 }
 
 func (s *storageBtrfs) ContainerCreate(container container) error {
-	cPath := container.PathGet("")
+	cPath := container.Path("")
 
 	// MkdirAll the pardir of the BTRFS Subvolume.
 	if err := os.MkdirAll(filepath.Dir(cPath), 0755); err != nil {
@@ -82,7 +83,7 @@ func (s *storageBtrfs) ContainerCreateFromImage(
 	}
 
 	// Now make a snapshot of the image subvol
-	err := s.subvolsSnapshot(imageSubvol, container.PathGet(""), false)
+	err := s.subvolsSnapshot(imageSubvol, container.Path(""), false)
 	if err != nil {
 		return err
 	}
@@ -93,7 +94,7 @@ func (s *storageBtrfs) ContainerCreateFromImage(
 			return err
 		}
 	} else {
-		if err := os.Chmod(container.PathGet(""), 0700); err != nil {
+		if err := os.Chmod(container.Path(""), 0700); err != nil {
 			return err
 		}
 	}
@@ -102,7 +103,7 @@ func (s *storageBtrfs) ContainerCreateFromImage(
 }
 
 func (s *storageBtrfs) ContainerDelete(container container) error {
-	cPath := container.PathGet("")
+	cPath := container.Path("")
 
 	// First remove the subvol (if it was one).
 	if s.isSubvolume(cPath) {
@@ -122,8 +123,8 @@ func (s *storageBtrfs) ContainerDelete(container container) error {
 }
 
 func (s *storageBtrfs) ContainerCopy(container container, sourceContainer container) error {
-	subvol := sourceContainer.PathGet("")
-	dpath := container.PathGet("")
+	subvol := sourceContainer.Path("")
+	dpath := container.Path("")
 
 	if s.isSubvolume(subvol) {
 		// Snapshot the sourcecontainer
@@ -141,8 +142,8 @@ func (s *storageBtrfs) ContainerCopy(container container, sourceContainer contai
 		 * Copy by using rsync
 		 */
 		output, err := storageRsyncCopy(
-			sourceContainer.PathGet(""),
-			container.PathGet(""))
+			sourceContainer.Path(""),
+			container.Path(""))
 		if err != nil {
 			s.ContainerDelete(container)
 
@@ -170,8 +171,8 @@ func (s *storageBtrfs) ContainerStop(container container) error {
 func (s *storageBtrfs) ContainerRename(
 	container container, newName string) error {
 
-	oldPath := container.PathGet("")
-	newPath := container.PathGet(newName)
+	oldPath := container.Path("")
+	newPath := container.Path(newName)
 
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return err
@@ -184,12 +185,12 @@ func (s *storageBtrfs) ContainerRename(
 func (s *storageBtrfs) ContainerRestore(
 	container container, sourceContainer container) error {
 
-	targetSubVol := container.PathGet("")
-	sourceSubVol := sourceContainer.PathGet("")
-	sourceBackupPath := container.PathGet("") + ".back"
+	targetSubVol := container.Path("")
+	sourceSubVol := sourceContainer.Path("")
+	sourceBackupPath := container.Path("") + ".back"
 
 	// Create a backup of the container
-	err := os.Rename(container.PathGet(""), sourceBackupPath)
+	err := os.Rename(container.Path(""), sourceBackupPath)
 	if err != nil {
 		return err
 	}
@@ -228,7 +229,7 @@ func (s *storageBtrfs) ContainerRestore(
 	if failure != nil {
 		// Restore original container
 		s.ContainerDelete(container)
-		os.Rename(sourceBackupPath, container.PathGet(""))
+		os.Rename(sourceBackupPath, container.Path(""))
 	} else {
 		// Remove the backup, we made
 		if s.isSubvolume(sourceBackupPath) {
@@ -243,8 +244,8 @@ func (s *storageBtrfs) ContainerRestore(
 func (s *storageBtrfs) ContainerSnapshotCreate(
 	snapshotContainer container, sourceContainer container) error {
 
-	subvol := sourceContainer.PathGet("")
-	dpath := snapshotContainer.PathGet("")
+	subvol := sourceContainer.Path("")
+	dpath := snapshotContainer.Path("")
 
 	if s.isSubvolume(subvol) {
 		// Create a readonly snapshot of the source.
@@ -277,10 +278,10 @@ func (s *storageBtrfs) ContainerSnapshotDelete(
 
 	err := s.ContainerDelete(snapshotContainer)
 	if err != nil {
-		return fmt.Errorf("Error deleting snapshot %s: %s", snapshotContainer.NameGet(), err)
+		return fmt.Errorf("Error deleting snapshot %s: %s", snapshotContainer.Name(), err)
 	}
 
-	oldPathParent := filepath.Dir(snapshotContainer.PathGet(""))
+	oldPathParent := filepath.Dir(snapshotContainer.Path(""))
 	if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
 		os.Remove(oldPathParent)
 	}
@@ -291,8 +292,8 @@ func (s *storageBtrfs) ContainerSnapshotDelete(
 func (s *storageBtrfs) ContainerSnapshotRename(
 	snapshotContainer container, newName string) error {
 
-	oldPath := snapshotContainer.PathGet("")
-	newPath := snapshotContainer.PathGet(newName)
+	oldPath := snapshotContainer.Path("")
+	newPath := snapshotContainer.Path(newName)
 
 	// Create the new parent.
 	if !shared.PathExists(filepath.Dir(newPath)) {
@@ -515,6 +516,32 @@ func (s *storageBtrfs) subvolsSnapshot(
  * else false.
  */
 func (s *storageBtrfs) isSubvolume(subvolPath string) bool {
+	if runningInUserns {
+		// subvolume show is restricted to real root, use a workaround
+
+		fs := syscall.Statfs_t{}
+		err := syscall.Statfs(subvolPath, &fs)
+		if err != nil {
+			return false
+		}
+
+		if fs.Type != filesystemSuperMagicBtrfs {
+			return false
+		}
+
+		parentFs := syscall.Statfs_t{}
+		err = syscall.Statfs(path.Dir(subvolPath), &parentFs)
+		if err != nil {
+			return false
+		}
+
+		if fs.Fsid == parentFs.Fsid {
+			return false
+		}
+
+		return true
+	}
+
 	output, err := exec.Command(
 		"btrfs",
 		"subvolume",
@@ -529,13 +556,43 @@ func (s *storageBtrfs) isSubvolume(subvolPath string) bool {
 
 // getSubVolumes returns a list of relative subvolume paths of "path".
 func (s *storageBtrfs) getSubVolumes(path string) ([]string, error) {
+	result := []string{}
+
+	if runningInUserns {
+		if !strings.HasSuffix(path, "/") {
+			path = path + "/"
+		}
+
+		// Unprivileged users can't get to fs internals
+		filepath.Walk(path, func(fpath string, fi os.FileInfo, err error) error {
+			if strings.TrimRight(fpath, "/") == strings.TrimRight(path, "/") {
+				return nil
+			}
+
+			if err != nil {
+				return nil
+			}
+
+			if !fi.IsDir() {
+				return nil
+			}
+
+			if s.isSubvolume(fpath) {
+				result = append(result, strings.TrimPrefix(fpath, path))
+			}
+			return nil
+		})
+
+		return result, nil
+	}
+
 	out, err := exec.Command(
 		"btrfs",
 		"inspect-internal",
 		"rootid",
 		path).CombinedOutput()
 	if err != nil {
-		return []string{}, fmt.Errorf(
+		return result, fmt.Errorf(
 			"Unable to get btrfs rootid, path='%s', err='%s'",
 			path,
 			err)
@@ -548,7 +605,7 @@ func (s *storageBtrfs) getSubVolumes(path string) ([]string, error) {
 		"subvolid-resolve",
 		rootid, path).CombinedOutput()
 	if err != nil {
-		return []string{}, fmt.Errorf(
+		return result, fmt.Errorf(
 			"Unable to resolve btrfs rootid, path='%s', err='%s'",
 			path,
 			err)
@@ -562,13 +619,12 @@ func (s *storageBtrfs) getSubVolumes(path string) ([]string, error) {
 		"-o",
 		path).CombinedOutput()
 	if err != nil {
-		return []string{}, fmt.Errorf(
+		return result, fmt.Errorf(
 			"Unable to list subvolumes, path='%s', err='%s'",
 			path,
 			err)
 	}
 
-	result := []string{}
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
 		if line == "" {

@@ -327,7 +327,7 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			image = inName
 		}
 
-		if !terminal.IsTerminal(syscall.Stdin) {
+		if !terminal.IsTerminal(int(syscall.Stdin)) {
 			contents, err := ioutil.ReadAll(os.Stdin)
 			if err != nil {
 				return err
@@ -459,7 +459,7 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		return err
 
 	default:
-		return fmt.Errorf(gettext.Gettext("Unknown image command %s"), args[0])
+		return errArgs
 	}
 }
 
