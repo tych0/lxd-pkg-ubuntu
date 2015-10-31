@@ -1,3 +1,13 @@
+lxd (0.21-0ubuntu1) xenial; urgency=medium
+
+  * New upstream release (0.21)
+    - Default LVM volume size to 10GB (instead of 100GB)
+    - Client now supports aliases
+    - "lxc info" now works against servers
+    - Nested LXD now works on btrfs too
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sat, 31 Oct 2015 19:45:00 -0400
+
 lxd (0.20-0ubuntu4) wily; urgency=medium
 
   * Use dh-golang. (LP: #1481507)
