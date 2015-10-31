@@ -124,7 +124,7 @@ func (c *profileCmd) run(config *lxd.Config, args []string) error {
 	case "show":
 		return doProfileShow(client, profile)
 	default:
-		return fmt.Errorf(gettext.Gettext("unknown profile cmd %s"), args[0])
+		return errArgs
 	}
 }
 
@@ -137,7 +137,7 @@ func doProfileCreate(client *lxd.Client, p string) error {
 }
 
 func doProfileEdit(client *lxd.Client, p string) error {
-	if !terminal.IsTerminal(syscall.Stdin) {
+	if !terminal.IsTerminal(int(syscall.Stdin)) {
 		contents, err := ioutil.ReadAll(os.Stdin)
 		if err != nil {
 			return err
@@ -318,7 +318,7 @@ func doProfileSet(client *lxd.Client, p string, args []string) error {
 		value = args[1]
 	}
 
-	if !terminal.IsTerminal(syscall.Stdin) && value == "-" {
+	if !terminal.IsTerminal(int(syscall.Stdin)) && value == "-" {
 		buf, err := ioutil.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("Can't read from stdin: %s", err)

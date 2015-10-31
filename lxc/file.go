@@ -211,7 +211,7 @@ func (c *fileCmd) edit(config *lxd.Config, args []string) error {
 		return errArgs
 	}
 
-	if !terminal.IsTerminal(syscall.Stdin) {
+	if !terminal.IsTerminal(int(syscall.Stdin)) {
 		_, err := ioutil.ReadAll(os.Stdin)
 		if err != nil {
 			return err
@@ -267,6 +267,6 @@ func (c *fileCmd) run(config *lxd.Config, args []string) error {
 	case "edit":
 		return c.edit(config, args[1:])
 	default:
-		return fmt.Errorf(gettext.Gettext("invalid argument %s"), args[0])
+		return errArgs
 	}
 }
