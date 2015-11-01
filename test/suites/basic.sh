@@ -152,11 +152,6 @@ test_basic_usage() {
   lxc start foo
   mac2=$(lxc exec foo cat /sys/class/net/eth0/address)
 
-  if [ -n "${mac1}" ] && [ -n "${mac2}" ] && [ "${mac1}" != "${mac2}" ]; then
-    echo "==> MAC addresses didn't match across restarts (${mac1} vs ${mac2})"
-    false
-  fi
-
   # check that we can set the environment
   lxc exec foo pwd | grep /root
   lxc exec --env BEST_BAND=meshuggah foo env | grep meshuggah
