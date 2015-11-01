@@ -1,0 +1,29 @@
+From 5ddd436362c8d0ad605c0279fcd6df47b4b2701c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@ubuntu.com>
+Date: Sat, 31 Oct 2015 22:14:30 -0400
+Subject: ubuntu: Disable MAC address check
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Stéphane Graber <stgraber@ubuntu.com>
+---
+ test/suites/basic.sh | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/test/suites/basic.sh b/test/suites/basic.sh
+index 87766f2..bc0fec7 100644
+--- a/test/suites/basic.sh
++++ b/test/suites/basic.sh
+@@ -152,11 +152,6 @@ test_basic_usage() {
+   lxc start foo
+   mac2=$(lxc exec foo cat /sys/class/net/eth0/address)
+ 
+-  if [ -n "${mac1}" ] && [ -n "${mac2}" ] && [ "${mac1}" != "${mac2}" ]; then
+-    echo "==> MAC addresses didn't match across restarts (${mac1} vs ${mac2})"
+-    false
+-  fi
+-
+   # check that we can set the environment
+   lxc exec foo pwd | grep /root
+   lxc exec --env BEST_BAND=meshuggah foo env | grep meshuggah
