@@ -1,3 +1,10 @@
+lxd (0.21-0ubuntu4) xenial; urgency=medium
+
+  * Re-enable all the tests so we can better debug what's going on in
+    autopkgtest.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sun, 01 Nov 2015 16:20:48 -0500
+
 lxd (0.21-0ubuntu3) xenial; urgency=medium
 
   * Update previous patch to remove any related code as otherwise the
