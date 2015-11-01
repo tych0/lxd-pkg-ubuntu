@@ -1,3 +1,11 @@
+lxd (0.21-0ubuntu2) xenial; urgency=medium
+
+  * Add a local patch which disables the MAC address check for now as we
+    appear to be getting some odd values back from the kernel under adt
+    (used to be empty is now valid value but prefixed with \@ and trailing \n).
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sat, 31 Oct 2015 22:16:29 -0400
+
 lxd (0.21-0ubuntu1) xenial; urgency=medium
 
   * New upstream release (0.21)
