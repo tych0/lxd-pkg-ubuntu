@@ -1,3 +1,11 @@
+lxd (0.21-0ubuntu3) xenial; urgency=medium
+
+  * Update previous patch to remove any related code as otherwise the
+    static analysis run in the testsuite (shellcheck) will fail on unused
+    variables.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Sun, 01 Nov 2015 00:10:16 -0400
+
 lxd (0.21-0ubuntu2) xenial; urgency=medium
 
   * Add a local patch which disables the MAC address check for now as we
