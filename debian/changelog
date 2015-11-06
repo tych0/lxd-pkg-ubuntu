@@ -1,3 +1,10 @@
+lxd (0.21-0ubuntu5) xenial; urgency=medium
+
+  * Don't wrap our testsuite with "script", it apparently mangles output
+    in some odd cases.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 06 Nov 2015 11:43:34 -0500
+
 lxd (0.21-0ubuntu4) xenial; urgency=medium
 
   * Re-enable all the tests so we can better debug what's going on in
