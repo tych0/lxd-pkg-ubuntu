@@ -13,4 +13,4 @@ trap cleanup EXIT HUP INT TERM
 
 # Run the tests
 export LXD_TEST_DRACONIAN_PROXY=1
-(cd test/ && script --flush --return -c "./main.sh" test.log)
+(cd test/ && ./main.sh)
