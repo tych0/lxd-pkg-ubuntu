@@ -7,13 +7,17 @@ Files: *
 Copyright: 2014-2015 LXD contributors
 License: Apache-2
 
-Files: dist/src/code.google.com/p/go-charset/*
+Files: dist/src/github.com/rogpeppe/go-charset/*
 Copyright: Roger Peppe <rogpeppe@gmail.com>
 License: BSD-3-clause
 
 Files: dist/src/github.com/chai2010/gettext-go/*
 Copyright: 2013 ChaiShushan <chaishushan@gmail.com>
 License: BSD-3-clause
+
+Files: dist/src/github.com/davecgh/go-spew/*
+Copyright: 2015 Dave Collins <dave@davec.name>
+License: Expat
 
 Files: dist/src/github.com/dustinkirkland/golang-petname/*
 Copyright: 2014 Dustin Kirkland <dustin.kirkland@gmail.com>
@@ -58,6 +62,10 @@ License: Expat
 Files: dist/src/github.com/olekukonko/tablewriter/*
 Copyright: 2014 by Oleku Konko
 License: Expat
+
+Files: dist/src/github.com/pmezard/go-difflib/*
+Copyright: 2015 by Patrick Mezard
+License: BSD-3-clause
 
 Files: dist/src/github.com/satori/go.uuid/*
 Copyright: 2013-2015 Maxim Bublis <b@codemonkey.ru>
