@@ -1,3 +1,30 @@
+lxd (0.22-0ubuntu1) xenial; urgency=medium
+
+  * New upstream release (0.22)
+    - Freeze containers before killing them (helps with fork bombs)
+    - Configurable image compression algorithm (also supports no compression)
+    - Support using an HTTP proxy when downloading a remote image
+    - Initial implementation of the events interface and minimal client
+      for it (lxc monitor)
+    - Don't remove the main LXD socket when starting a second daemon
+    - On failure to add a remote, cleanup the cached certificate
+    - LXD no longer requires a client certificate to talk to public endpoints
+    - Better error and debug messages for checkpoint/restore and
+      container startup
+    - Fixed a race condition during container startup
+    - Update the busybox test image to avoid an occasional hang
+    - lvm-setup: Update to work on older Ubuntu releases
+    - Fix extraction of bz2 compressed images
+    - Fix a number of fd leaks
+    - Fix shmount handling to avoid creating an extra mount everytime
+      LXD starts
+    - lxd-images: Fallback to the daily stream if an image can't be
+      found in the releases stream
+    - Fix a uid/gid mapping issue on container copy
+    - Fix a LXD hang on invalid LXC configuration key
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Tue, 10 Nov 2015 18:00:48 -0500
+
 lxd (0.21-0ubuntu5) xenial; urgency=medium
 
   * Don't wrap our testsuite with "script", it apparently mangles output
