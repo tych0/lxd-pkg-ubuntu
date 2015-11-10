@@ -590,9 +590,14 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 		source["server"] = sourceUrl
 		body := shared.Jmap{"public": public, "source": source}
 
-		_, err = dest.post("images", body, Sync)
+		resp, err := dest.post("images", body, Async)
 		if err != nil {
 			continue
+		}
+
+		err = dest.WaitForSuccess(resp.Operation)
+		if err != nil {
+			return err
 		}
 
 		break
@@ -845,12 +850,12 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 		return "", err
 	}
 
-	resp, err := HoistResponse(raw, Sync)
+	resp, err := HoistResponse(raw, Async)
 	if err != nil {
 		return "", err
 	}
 
-	jmap, err := resp.MetadataAsMap()
+	jmap, err := c.AsyncWaitMeta(resp)
 	if err != nil {
 		return "", err
 	}
@@ -1206,6 +1211,37 @@ type secretMd struct {
 	Secret string `json:"secret"`
 }
 
+func (c *Client) Monitor(types []string, handler func(interface{})) error {
+	url := c.BaseWSURL + path.Join("/", "1.0", "events")
+	if len(types) != 0 {
+		url += "?types=" + strings.Join(types, ",")
+	}
+
+	conn, err := WebsocketDial(c.websocketDialer, url)
+	if err != nil {
+		return err
+	}
+
+	for {
+		message := make(map[string]interface{})
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		err = json.Unmarshal(data, &message)
+		if err != nil {
+			break
+		}
+
+		handler(message)
+	}
+
+	conn.Close()
+	return nil
+}
+
 // Exec runs a command inside the LXD container. For "interactive" use such as
 // `lxc exec ...`, one should pass a controlHandler that talks over the control
 // socket and handles things like SIGWINCH. If running non-interactive, passing
@@ -1233,11 +1269,14 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 	}
 
 	if controlHandler != nil {
+		var control *websocket.Conn
 		if wsControl, ok := md.FDs["control"]; ok {
-			control, err := c.websocket(resp.Operation, wsControl)
+			control, err = c.websocket(resp.Operation, wsControl)
 			if err != nil {
 				return -1, err
 			}
+			defer control.Close()
+
 			go controlHandler(c, control)
 		}
 
@@ -1245,8 +1284,11 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 		if err != nil {
 			return -1, err
 		}
+		defer conn.Close()
+
 		shared.WebsocketSendStream(conn, stdin)
 		<-shared.WebsocketRecvStream(stdout, conn)
+
 	} else {
 		conns := make([]*websocket.Conn, 3)
 		dones := make([]chan bool, 3)
@@ -1255,6 +1297,8 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 		if err != nil {
 			return -1, err
 		}
+		defer conns[0].Close()
+
 		dones[0] = shared.WebsocketSendStream(conns[0], stdin)
 
 		outputs := []io.WriteCloser{stdout, stderr}
@@ -1263,6 +1307,8 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 			if err != nil {
 				return -1, err
 			}
+			defer conns[i].Close()
+
 			dones[i] = shared.WebsocketRecvStream(outputs[i-1], conns[i])
 		}
 
@@ -1858,6 +1904,28 @@ func (c *Client) ProfileCopy(name, newname string, dest *Client) error {
 	return err
 }
 
+func (c *Client) AsyncWaitMeta(resp *Response) (*shared.Jmap, error) {
+	op, err := c.WaitFor(resp.Operation)
+	if err != nil {
+		return nil, err
+	}
+
+	if op.StatusCode == shared.Failure {
+		return nil, op.GetError()
+	}
+
+	if op.StatusCode != shared.Success {
+		return nil, fmt.Errorf(gettext.Gettext("got bad op status %s"), op.Status)
+	}
+
+	jmap, err := op.MetadataAsMap()
+	if err != nil {
+		return nil, err
+	}
+
+	return jmap, nil
+}
+
 func (c *Client) ImageFromContainer(cname string, public bool, aliases []string, properties map[string]string) (string, error) {
 	source := shared.Jmap{"type": "container", "name": cname}
 	if shared.IsSnapshot(cname) {
@@ -1865,12 +1933,12 @@ func (c *Client) ImageFromContainer(cname string, public bool, aliases []string,
 	}
 	body := shared.Jmap{"public": public, "source": source, "properties": properties}
 
-	resp, err := c.post("images", body, Sync)
+	resp, err := c.post("images", body, Async)
 	if err != nil {
 		return "", err
 	}
 
-	jmap, err := resp.MetadataAsMap()
+	jmap, err := c.AsyncWaitMeta(resp)
 	if err != nil {
 		return "", err
 	}

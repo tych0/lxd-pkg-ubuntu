@@ -500,14 +500,16 @@ type Generator struct {
 
 	Pkg map[string]string // The names under which we import support packages
 
-	packageName      string            // What we're calling ourselves.
-	allFiles         []*FileDescriptor // All files in the tree
-	genFiles         []*FileDescriptor // Those files we will generate output for.
-	file             *FileDescriptor   // The file we are compiling now.
-	usedPackages     map[string]bool   // Names of packages used in current file.
-	typeNameToObject map[string]Object // Key is a fully-qualified name in input syntax.
-	init             []string          // Lines to emit in the init function.
+	packageName      string                     // What we're calling ourselves.
+	allFiles         []*FileDescriptor          // All files in the tree
+	allFilesByName   map[string]*FileDescriptor // All files by filename.
+	genFiles         []*FileDescriptor          // Those files we will generate output for.
+	file             *FileDescriptor            // The file we are compiling now.
+	usedPackages     map[string]bool            // Names of packages used in current file.
+	typeNameToObject map[string]Object          // Key is a fully-qualified name in input syntax.
+	init             []string                   // Lines to emit in the init function.
 	indent           string
+	writeOutput      bool
 }
 
 // New creates a new generator and allocates the request and response protobufs.
@@ -743,6 +745,7 @@ AllFiles:
 // It also creates the list of files to generate and so should be called before GenerateAllFiles.
 func (g *Generator) WrapTypes() {
 	g.allFiles = make([]*FileDescriptor, len(g.Request.ProtoFile))
+	g.allFilesByName = make(map[string]*FileDescriptor, len(g.allFiles))
 	for i, f := range g.Request.ProtoFile {
 		// We must wrap the descriptors before we wrap the enums
 		descs := wrapDescriptors(f)
@@ -750,32 +753,29 @@ func (g *Generator) WrapTypes() {
 		enums := wrapEnumDescriptors(f, descs)
 		g.buildNestedEnums(descs, enums)
 		exts := wrapExtensions(f)
-		imps := wrapImported(f, g)
 		fd := &FileDescriptor{
 			FileDescriptorProto: f,
 			desc:                descs,
 			enum:                enums,
 			ext:                 exts,
-			imp:                 imps,
 			exported:            make(map[Object][]symbol),
 			proto3:              fileIsProto3(f),
 		}
 		extractComments(fd)
 		g.allFiles[i] = fd
+		g.allFilesByName[f.GetName()] = fd
+	}
+	for _, fd := range g.allFiles {
+		fd.imp = wrapImported(fd.FileDescriptorProto, g)
 	}
 
 	g.genFiles = make([]*FileDescriptor, len(g.Request.FileToGenerate))
-FindFiles:
 	for i, fileName := range g.Request.FileToGenerate {
-		// Search the list.  This algorithm is n^2 but n is tiny.
-		for _, file := range g.allFiles {
-			if fileName == file.GetName() {
-				g.genFiles[i] = file
-				file.index = i
-				continue FindFiles
-			}
+		g.genFiles[i] = g.allFilesByName[fileName]
+		if g.genFiles[i] == nil {
+			g.Fail("could not find file named", fileName)
 		}
-		g.Fail("could not find file named", fileName)
+		g.genFiles[i].index = i
 	}
 	g.Response.File = make([]*plugin.CodeGeneratorResponse_File, len(g.genFiles))
 }
@@ -1013,6 +1013,9 @@ func (g *Generator) ObjectNamed(typeName string) Object {
 // P prints the arguments to the generated output.  It handles strings and int32s, plus
 // handling indirections because they may be *string, etc.
 func (g *Generator) P(str ...interface{}) {
+	if !g.writeOutput {
+		return
+	}
 	g.WriteString(g.indent)
 	for _, v := range str {
 		switch s := v.(type) {
@@ -1021,19 +1024,19 @@ func (g *Generator) P(str ...interface{}) {
 		case *string:
 			g.WriteString(*s)
 		case bool:
-			g.WriteString(fmt.Sprintf("%t", s))
+			fmt.Fprintf(g, "%t", s)
 		case *bool:
-			g.WriteString(fmt.Sprintf("%t", *s))
+			fmt.Fprintf(g, "%t", *s)
 		case int:
-			g.WriteString(fmt.Sprintf("%d", s))
+			fmt.Fprintf(g, "%d", s)
 		case *int32:
-			g.WriteString(fmt.Sprintf("%d", *s))
+			fmt.Fprintf(g, "%d", *s)
 		case *int64:
-			g.WriteString(fmt.Sprintf("%d", *s))
+			fmt.Fprintf(g, "%d", *s)
 		case float64:
-			g.WriteString(fmt.Sprintf("%g", s))
+			fmt.Fprintf(g, "%g", s)
 		case *float64:
-			g.WriteString(fmt.Sprintf("%g", *s))
+			fmt.Fprintf(g, "%g", *s)
 		default:
 			g.Fail(fmt.Sprintf("unknown type in printer: %T", v))
 		}
@@ -1073,8 +1076,9 @@ func (g *Generator) GenerateAllFiles() {
 	i := 0
 	for _, file := range g.allFiles {
 		g.Reset()
+		g.writeOutput = genFileMap[file]
 		g.generate(file)
-		if _, ok := genFileMap[file]; !ok {
+		if !g.writeOutput {
 			continue
 		}
 		g.Response.File[i] = new(plugin.CodeGeneratorResponse_File)
@@ -1134,6 +1138,9 @@ func (g *Generator) generate(file *FileDescriptor) {
 	g.Buffer = new(bytes.Buffer)
 	g.generateHeader()
 	g.generateImports()
+	if !g.writeOutput {
+		return
+	}
 	g.Write(rem.Bytes())
 
 	// Reformat generated code.
@@ -1211,6 +1218,9 @@ func (g *Generator) generateHeader() {
 // It returns an indication of whether any comments were printed.
 // See descriptor.proto for its format.
 func (g *Generator) PrintComments(path string) bool {
+	if !g.writeOutput {
+		return false
+	}
 	if loc, ok := g.file.comments[path]; ok {
 		text := strings.TrimSuffix(loc.GetLeadingComments(), "\n")
 		for _, line := range strings.Split(text, "\n") {
@@ -1222,12 +1232,7 @@ func (g *Generator) PrintComments(path string) bool {
 }
 
 func (g *Generator) fileByName(filename string) *FileDescriptor {
-	for _, fd := range g.allFiles {
-		if fd.GetName() == filename {
-			return fd
-		}
-	}
-	return nil
+	return g.allFilesByName[filename]
 }
 
 // weak returns whether the ith import of the current file is a weak import.
@@ -1266,15 +1271,14 @@ func (g *Generator) generateImports() {
 			g.P("// skipping weak import ", fd.PackageName(), " ", strconv.Quote(importPath))
 			continue
 		}
-		if _, ok := g.usedPackages[fd.PackageName()]; ok {
-			g.P("import ", fd.PackageName(), " ", strconv.Quote(importPath))
-		} else {
-			// TODO: Re-enable this when we are more feature-complete.
-			// For instance, some protos use foreign field extensions, which we don't support.
-			// Until then, this is just annoying spam.
-			//log.Printf("protoc-gen-go: discarding unused import from %v: %v", *g.file.Name, s)
-			g.P("// discarding unused import ", fd.PackageName(), " ", strconv.Quote(importPath))
+		// We need to import all the dependencies, even if we don't reference them,
+		// because other code and tools depend on having the full transitive closure
+		// of protocol buffer types in the binary.
+		pname := fd.PackageName()
+		if _, ok := g.usedPackages[pname]; !ok {
+			pname = "_"
 		}
+		g.P("import ", pname, " ", strconv.Quote(importPath))
 	}
 	g.P()
 	// TODO: may need to worry about uniqueness across plugins
@@ -2299,6 +2303,12 @@ func (g *Generator) generateMessage(message *Descriptor) {
 		g.generateExtension(ext)
 	}
 
+	fullName := strings.Join(message.TypeName(), ".")
+	if g.file.Package != nil {
+		fullName = *g.file.Package + "." + fullName
+	}
+
+	g.addInitf("%s.RegisterType((*%s)(nil), %q)", g.Pkg["proto"], ccTypeName, fullName)
 }
 
 func (g *Generator) generateExtension(ext *ExtensionDescriptor) {
