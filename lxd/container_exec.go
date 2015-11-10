@@ -74,7 +74,7 @@ func (s *execWs) Connect(secret string, r *http.Request, w http.ResponseWriter) 
 	return os.ErrPermission
 }
 
-func (s *execWs) Do() shared.OperationResult {
+func (s *execWs) Do(id string) shared.OperationResult {
 	<-s.allConnected
 
 	var err error
@@ -196,8 +196,12 @@ func (s *execWs) Do() shared.OperationResult {
 		tty.Close()
 	}
 
-	if s.interactive && s.conns[-1] == nil {
-		controlExit <- true
+	if s.conns[-1] == nil {
+		if s.interactive {
+			controlExit <- true
+		}
+	} else {
+		s.conns[-1].Close()
 	}
 
 	wgEOF.Wait()
@@ -285,7 +289,7 @@ func containerExecPost(d *Daemon, r *http.Request) Response {
 		return AsyncResponseWithWs(ws, nil)
 	}
 
-	run := func() shared.OperationResult {
+	run := func(id string) shared.OperationResult {
 
 		nullDev, err := os.OpenFile(os.DevNull, os.O_RDWR, 0666)
 		if err != nil {

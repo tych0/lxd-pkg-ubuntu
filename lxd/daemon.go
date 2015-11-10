@@ -99,6 +99,7 @@ func (d *Daemon) httpGetSync(url string) (*lxd.Response, error) {
 	tr := &http.Transport{
 		TLSClientConfig: d.tlsconfig,
 		Dial:            shared.RFC3493Dialer,
+		Proxy:           http.ProxyFromEnvironment,
 	}
 	myhttp := http.Client{
 		Transport: tr,
@@ -139,6 +140,7 @@ func (d *Daemon) httpGetFile(url string) (*http.Response, error) {
 	tr := &http.Transport{
 		TLSClientConfig: d.tlsconfig,
 		Dial:            shared.RFC3493Dialer,
+		Proxy:           http.ProxyFromEnvironment,
 	}
 	myhttp := http.Client{
 		Transport: tr,
@@ -822,8 +824,7 @@ func (d *Daemon) Init() error {
 		// If the socket exists, let's try to connect to it and see if there's
 		// a lxd running.
 		if shared.PathExists(localSocketPath) {
-			c := &lxd.Config{Remotes: map[string]lxd.RemoteConfig{}}
-			_, err := lxd.NewClient(c, "")
+			_, err := lxd.NewClient(&lxd.DefaultConfig, "local")
 			if err != nil {
 				shared.Log.Debug("Detected stale unix socket, deleting")
 				// Connecting failed, so let's delete the socket and
@@ -832,6 +833,8 @@ func (d *Daemon) Init() error {
 				if err != nil {
 					return err
 				}
+			} else {
+				return fmt.Errorf("LXD is already running.")
 			}
 		}
 
@@ -996,6 +999,8 @@ func (d *Daemon) ConfigKeyIsValid(key string) bool {
 	case "storage.zfs_pool_name":
 		return true
 	case "images.remote_cache_expiry":
+		return true
+	case "images.compression_algorithm":
 		return true
 	}
 

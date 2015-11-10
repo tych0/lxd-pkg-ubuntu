@@ -189,10 +189,19 @@ class LXD(object):
 
             status, data = self.rest_call("/1.0/images", body, "POST", headers)
 
-        if status != 200:
+        if status != 202:
             raise Exception("Failed to upload the image: %s" % status)
 
-        return data['metadata']
+        status, data = self.rest_call(data['operation'] + "/wait",
+                                      "", "GET", {})
+        if status != 200:
+            raise Exception("Failed to query the operation: %s" % status)
+
+        if data['status_code'] != 200:
+            raise Exception("Failed to import the image: %s" %
+                            data['metadata'])
+
+        return data['metadata']['metadata']
 
 
 class Image(object):
@@ -329,6 +338,16 @@ class Busybox(object):
         metadata_file.name = "metadata.yaml"
         target_tarball.addfile(metadata_file,
                                io.BytesIO(metadata_yaml))
+
+        # Add an /etc/inittab; this is to work around:
+        # http://lists.busybox.net/pipermail/busybox/2015-November/083618.html
+        # Basically, since there are some hardcoded defaults that misbehave, we
+        # just pass an empty inittab so those aren't applied, and then busybox
+        # doesn't spin forever.
+        inittab = tarfile.TarInfo()
+        inittab.size = 1
+        inittab.name = "/rootfs/etc/inittab"
+        target_tarball.addfile(inittab, io.BytesIO(b"\n"))
 
         target_tarball.close()
         if split:
@@ -529,15 +548,30 @@ if __name__ == "__main__":
         setup_alias(args.alias, fingerprint)
 
     def import_ubuntu(parser, args):
-        ubuntu = Ubuntu(stream=args.stream)
+        if args.stream == "auto":
+            for stream in ("releases", "daily"):
+                ubuntu = Ubuntu(stream=stream)
+                try:
+                    image = ubuntu.image_lookup(args.release,
+                                                args.architecture,
+                                                args.version)
+                except:
+                    continue
+
+                args.stream = stream
+                break
+            else:
+                raise Exception("The requested image couldn't be found "
+                                "in any stream.")
+        else:
+            ubuntu = Ubuntu(stream=args.stream)
+            image = ubuntu.image_lookup(args.release, args.architecture,
+                                        args.version)
 
         sync = False
         if args.sync:
             sync = "ubuntu:%s:%s:%s" % (args.stream, args.release,
                                         args.architecture)
-
-        image = ubuntu.image_lookup(args.release, args.architecture,
-                                    args.version)
 
         fingerprint = \
             image['items']['lxd.tar.xz']['combined_sha256'].split(" ")[0]
@@ -674,8 +708,8 @@ if __name__ == "__main__":
                                       default=None, nargs="?")
     parser_import_ubuntu.add_argument("version", help=_("Version"),
                                       default=None, nargs="?")
-    parser_import_ubuntu.add_argument("--stream", default="releases",
-                                      choices=("releases", "daily"),
+    parser_import_ubuntu.add_argument("--stream", default="auto",
+                                      choices=("auto", "releases", "daily"),
                                       help=_("The simplestream stream to use"))
     parser_import_ubuntu.add_argument("--alias", action="append", default=[],
                                       help=_("Aliases for the image"))

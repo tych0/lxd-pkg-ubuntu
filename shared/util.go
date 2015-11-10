@@ -195,7 +195,7 @@ func GetTLSConfig(certf string, keyf string) (*tls.Config, error) {
 
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		ClientAuth:         tls.RequireAnyClientCert,
+		ClientAuth:         tls.RequestClientCert,
 		Certificates:       []tls.Certificate{cert},
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
@@ -385,7 +385,7 @@ func isSharedMount(file *os.File, pathName string) int {
 	for scanner.Scan() {
 		line := scanner.Text()
 		rows := strings.Fields(line)
-		if !strings.HasSuffix(pathName, rows[3]) || rows[4] != pathName {
+		if !strings.HasSuffix(pathName, rows[3]) && rows[4] != pathName {
 			continue
 		}
 		if strings.HasPrefix(rows[6], "shared:") {
@@ -395,21 +395,6 @@ func isSharedMount(file *os.File, pathName string) int {
 		}
 	}
 	return 0
-}
-
-func IsSharedMount(pathName string) bool {
-	file, err := os.Open("/proc/self/mountinfo")
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-
-	switch isSharedMount(file, pathName) {
-	case 1:
-		return true
-	default:
-		return false
-	}
 }
 
 func IsOnSharedMount(pathName string) bool {
@@ -533,4 +518,58 @@ func InterfaceToBool(value interface{}) bool {
 	default:
 		return false
 	}
+}
+
+func TextEditor(inPath string, inContent []byte) ([]byte, error) {
+	var f *os.File
+	var err error
+	var path string
+
+	// Detect the text editor to use
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi"
+		}
+	}
+
+	if inPath == "" {
+		// If provided input, create a new file
+		f, err = ioutil.TempFile("", "lxd_editor_")
+		if err != nil {
+			return []byte{}, err
+		}
+
+		if err = f.Chmod(0600); err != nil {
+			f.Close()
+			os.Remove(f.Name())
+			return []byte{}, err
+		}
+
+		f.Write(inContent)
+		f.Close()
+
+		path = f.Name()
+		defer os.Remove(path)
+	} else {
+		path = inPath
+	}
+
+	cmdParts := strings.Fields(editor)
+	cmd := exec.Command(cmdParts[0], append(cmdParts[1:], path)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		return []byte{}, err
+	}
+
+	content, err := ioutil.ReadFile(path)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return content, nil
 }
