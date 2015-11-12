@@ -1,3 +1,10 @@
+lxd (0.22-0ubuntu2) xenial; urgency=medium
+
+  * SECURITY UPDATE: Fix the mode of /var/lib/lxd/unix.socket when
+    socket-activated by systemd to be 0660 instead of 0666. (LP: #1515689)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 12 Nov 2015 11:35:59 -0500
+
 lxd (0.22-0ubuntu1) xenial; urgency=medium
 
   * New upstream release (0.22)
