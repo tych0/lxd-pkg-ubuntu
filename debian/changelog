@@ -1,3 +1,30 @@
+lxd (0.23-0ubuntu1) xenial; urgency=medium
+
+  * New upstream release (0.23)
+    - New "lxd init" command is available to help setup storage, network
+      and password on new LXD installations
+    - Log messages are now sent over the events API
+    - New process count metric available in the containers API
+      and in "lxc info"
+    - Rewritten operations handling, now includes events for each
+      changes and includes download status
+    - "lxc image import" can now take the URL to an https webserver
+      advertising a LXD image through HTTP headers
+    - The minimal HTTP proxy shipped by LXD has been rewritten to be
+      even lighter
+    - "lxc config get \<server-config-key>" now works as expected
+    - lxd-images: Much lower memory usage when importing an image
+    - More readable log entries over the events API
+    - Event filtering in "lxc monitor" now works properly
+    - Container architectures are now properly tracked
+    - LXD now ensures that published containers will always have
+      metadata in their image
+    - Container copy now copies devices and config properly
+    - Image import failure now result in proper error messages
+    - "lxc info --show-log" is now also suggested on "lxc launch" failures
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 25 Nov 2015 02:11:02 -0500
+
 lxd (0.22-0ubuntu2) xenial; urgency=medium
 
   * SECURITY UPDATE: Fix the mode of /var/lib/lxd/unix.socket when
