@@ -10,3 +10,5 @@ kill timeout 40
 respawn
 
 exec /usr/bin/lxd --group lxd --logfile=/var/log/lxd/lxd.log
+
+post-start exec /usr/bin/lxd waitready

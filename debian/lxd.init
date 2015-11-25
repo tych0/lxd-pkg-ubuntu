@@ -32,6 +32,7 @@ case "$1" in
         ulimit -n 65536
         if start-stop-daemon ${START} -- --group lxd --logfile=/var/log/lxd/lxd.log >/dev/null 2>&1 ; then
             echo "${NAME}."
+            ${DAEMON} waitready
         else
             if start-stop-daemon --test ${START} >/dev/null 2>&1; then
                 echo "(failed)."
