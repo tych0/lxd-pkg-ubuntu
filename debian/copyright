@@ -7,10 +7,6 @@ Files: *
 Copyright: 2014-2015 LXD contributors
 License: Apache-2
 
-Files: dist/src/github.com/rogpeppe/go-charset/*
-Copyright: Roger Peppe <rogpeppe@gmail.com>
-License: BSD-3-clause
-
 Files: dist/src/github.com/chai2010/gettext-go/*
 Copyright: 2013 ChaiShushan <chaishushan@gmail.com>
 License: BSD-3-clause
@@ -22,10 +18,6 @@ License: Expat
 Files: dist/src/github.com/dustinkirkland/golang-petname/*
 Copyright: 2014 Dustin Kirkland <dustin.kirkland@gmail.com>
 License: Apache-2
-
-Files: dist/src/github.com/elazarl/goproxy/*
-Copyright: 2012 Elazar Leibovich
-License: BSD-3-clause
 
 Files: dist/src/github.com/godbus/dbus/*
 Copyright: 2013 Georg Reinke <guelfey@gmail.com>
@@ -47,12 +39,12 @@ Files: dist/src/github.com/gorilla/websocket/*
 Copyright: 2013 The Gorilla WebSocket Authors.
 License: BSD-2-clause
 
-Files: dist/src/github.com/inconshreveable/go-vhost/*
-Copyright: 2014 Alan Shreve
-License: Apache-2
-
 Files: dist/src/github.com/mattn/go-colorable/*
 Copyright: 2014 Yasuhiro Matsumoto
+License: Expat
+
+Files: dist/src/github.com/mattn/go-runewidth/*
+Copyright: 2015 Yasuhiro Matsumoto
 License: Expat
 
 Files: dist/src/github.com/mattn/go-sqlite3/*
