@@ -259,52 +259,135 @@ func imgPostContInfo(d *Daemon, r *http.Request, req imagePostReq,
 	return info, nil
 }
 
-func imgPostRemoteInfo(d *Daemon, req imagePostReq) (map[string]string, error) {
+func imgPostRemoteInfo(d *Daemon, req imagePostReq, op *operation) error {
 	var err error
 	var hash string
-	metadata := make(map[string]string)
 
 	if req.Source["alias"] != "" {
 		if req.Source["mode"] == "pull" && req.Source["server"] != "" {
 			hash, err = remoteGetImageFingerprint(d, req.Source["server"], req.Source["alias"])
 			if err != nil {
-				return metadata, err
+				return err
 			}
 		} else {
-
 			hash, err = dbImageAliasGet(d.db, req.Source["alias"])
 			if err != nil {
-				return metadata, err
+				return err
 			}
 		}
 	} else if req.Source["fingerprint"] != "" {
 		hash = req.Source["fingerprint"]
 	} else {
-		return metadata, fmt.Errorf("must specify one of alias or fingerprint for init from image")
+		return fmt.Errorf("must specify one of alias or fingerprint for init from image")
 	}
 
-	err = d.ImageDownload(
-		req.Source["server"], hash, req.Source["secret"], false)
+	err = d.ImageDownload(op,
+		req.Source["server"], hash, req.Source["secret"], false, false)
 
 	if err != nil {
-		return metadata, err
+		return err
 	}
 
 	info, err := dbImageGet(d.db, hash, false, false)
 	if err != nil {
-		return metadata, err
+		return err
 	}
 
 	if req.Public {
 		err = dbImageSetPublic(d.db, info.Id, req.Public)
 		if err != nil {
-			return metadata, err
+			return err
 		}
 	}
 
+	metadata := make(map[string]string)
 	metadata["fingerprint"] = info.Fingerprint
 	metadata["size"] = strconv.FormatInt(info.Size, 10)
-	return metadata, nil
+	op.UpdateMetadata(metadata)
+
+	return nil
+}
+
+func imgPostURLInfo(d *Daemon, req imagePostReq, op *operation) error {
+	var err error
+
+	if req.Source["url"] == "" {
+		return fmt.Errorf("Missing URL")
+	}
+
+	// Resolve the image URL
+	if d.tlsconfig == nil {
+		d.tlsconfig, err = shared.GetTLSConfig(d.certf, d.keyf)
+		if err != nil {
+			return err
+		}
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: d.tlsconfig,
+		Dial:            shared.RFC3493Dialer,
+		Proxy:           http.ProxyFromEnvironment,
+	}
+
+	myhttp := http.Client{
+		Transport: tr,
+	}
+
+	head, err := http.NewRequest("HEAD", req.Source["url"], nil)
+	if err != nil {
+		return err
+	}
+
+	architecturesStr := []string{}
+	for _, arch := range d.architectures {
+		architecturesStr = append(architecturesStr, fmt.Sprintf("%d", arch))
+	}
+
+	head.Header.Set("User-Agent", shared.UserAgent)
+	head.Header.Set("LXD-Server-Architectures", strings.Join(architecturesStr, ", "))
+	head.Header.Set("LXD-Server-Version", shared.Version)
+
+	raw, err := myhttp.Do(head)
+	if err != nil {
+		return err
+	}
+
+	hash := raw.Header.Get("LXD-Image-Hash")
+	if hash == "" {
+		return fmt.Errorf("Missing LXD-Image-Hash header")
+	}
+
+	url := raw.Header.Get("LXD-Image-URL")
+	if url == "" {
+		return fmt.Errorf("Missing LXD-Image-URL header")
+	}
+
+	// Import the image
+	err = d.ImageDownload(op,
+		url, hash, "", false, true)
+
+	if err != nil {
+		return err
+	}
+
+	info, err := dbImageGet(d.db, hash, false, false)
+	if err != nil {
+		return err
+	}
+
+	if req.Public {
+		err = dbImageSetPublic(d.db, info.Id, req.Public)
+		if err != nil {
+			return err
+		}
+	}
+
+	metadata := make(map[string]string)
+	metadata["fingerprint"] = info.Fingerprint
+	metadata["size"] = strconv.FormatInt(info.Size, 10)
+	op.UpdateMetadata(metadata)
+
+	return nil
 }
 
 func getImgPostInfo(d *Daemon, r *http.Request,
@@ -569,7 +652,10 @@ func imageBuildFromInfo(d *Daemon, info shared.ImageInfo) (metadata map[string]s
 		info.Fingerprint,
 		info.Filename,
 		info.Size,
+
+		// FIXME: InterfaceToBool is there for backward compatibility
 		shared.InterfaceToBool(info.Public),
+
 		info.Architecture,
 		info.CreationDate,
 		info.ExpiryDate,
@@ -624,13 +710,13 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 	err = decoder.Decode(&req)
 	imageUpload := err != nil
 
-	if !imageUpload && !shared.StringInSlice(req.Source["type"], []string{"container", "snapshot", "image"}) {
+	if !imageUpload && !shared.StringInSlice(req.Source["type"], []string{"container", "snapshot", "image", "url"}) {
 		cleanup(builddir, post)
 		return InternalError(fmt.Errorf("Invalid images JSON"))
 	}
 
 	// Begin background operation
-	run := shared.OperationWrap(func(id string) error {
+	run := func(op *operation) error {
 		var info shared.ImageInfo
 
 		// Setup the cleanup function
@@ -638,12 +724,19 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 
 		/* Processing image copy from remote */
 		if !imageUpload && req.Source["type"] == "image" {
-			metadata, err := imgPostRemoteInfo(d, req)
+			err := imgPostRemoteInfo(d, req, op)
 			if err != nil {
 				return err
 			}
+			return nil
+		}
 
-			updateOperation(id, metadata)
+		/* Processing image copy from URL */
+		if !imageUpload && req.Source["type"] == "url" {
+			err := imgPostURLInfo(d, req, op)
+			if err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -666,11 +759,16 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 			return err
 		}
 
-		updateOperation(id, metadata)
+		op.UpdateMetadata(metadata)
 		return nil
-	})
+	}
 
-	return &asyncResponse{run: run}
+	op, err := operationCreate(operationClassTask, nil, nil, run, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 func getImageMetadata(fname string) (*imageMetadata, error) {
@@ -849,53 +947,31 @@ func doImageGet(d *Daemon, fingerprint string, public bool) (shared.ImageInfo, R
 }
 
 func imageValidSecret(fingerprint string, secret string) bool {
-	operationLock.Lock()
 	for _, op := range operations {
-		if op.Resources == nil {
+		if op.resources == nil {
 			continue
 		}
 
-		opImages, ok := op.Resources["images"]
-		if ok == false {
+		opImages, ok := op.resources["images"]
+		if !ok {
 			continue
 		}
 
-		found := false
-		for img := range opImages {
-			toScan := strings.Replace(opImages[img], "/", " ", -1)
-			imgVersion := ""
-			imgFingerprint := ""
-			count, err := fmt.Sscanf(toScan, " %s images %s", &imgVersion, &imgFingerprint)
-			if err != nil || count != 2 {
-				continue
-			}
-
-			if imgFingerprint == fingerprint {
-				found = true
-				break
-			}
-		}
-
-		if found == false {
+		if !shared.StringInSlice(fingerprint, opImages) {
 			continue
 		}
 
-		opMetadata, err := op.MetadataAsMap()
-		if err != nil {
-			continue
-		}
-
-		opSecret, err := opMetadata.GetString("secret")
-		if err != nil {
+		opSecret, ok := op.metadata["secret"]
+		if !ok {
 			continue
 		}
 
 		if opSecret == secret {
-			operationLock.Unlock()
+			// Token is single-use, so cancel it now
+			op.Cancel()
 			return true
 		}
 	}
-	operationLock.Unlock()
 
 	return false
 }
@@ -1147,9 +1223,15 @@ func imageSecret(d *Daemon, r *http.Request) Response {
 	meta := shared.Jmap{}
 	meta["secret"] = secret
 
-	resources := make(map[string][]string)
+	resources := map[string][]string{}
 	resources["images"] = []string{fingerprint}
-	return &asyncResponse{resources: resources, metadata: meta}
+
+	op, err := operationCreate(operationClassToken, resources, meta, nil, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 var imagesExportCmd = Command{name: "images/{fingerprint}/export", untrustedGet: true, get: imageExport}

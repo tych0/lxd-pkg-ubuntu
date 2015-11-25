@@ -16,7 +16,6 @@ import (
 func createFromImage(d *Daemon, req *containerPostReq) Response {
 	var hash string
 	var err error
-	var run func(string) shared.OperationResult
 
 	if req.Source.Alias != "" {
 		if req.Source.Mode == "pull" && req.Source.Server != "" {
@@ -37,56 +36,68 @@ func createFromImage(d *Daemon, req *containerPostReq) Response {
 		return BadRequest(fmt.Errorf("must specify one of alias or fingerprint for init from image"))
 	}
 
-	if req.Source.Server != "" {
-		err := d.ImageDownload(req.Source.Server, hash, req.Source.Secret, true)
-		if err != nil {
-			return InternalError(err)
+	run := func(op *operation) error {
+		if req.Source.Server != "" {
+			err := d.ImageDownload(op, req.Source.Server, hash, req.Source.Secret, true, false)
+			if err != nil {
+				return err
+			}
 		}
-	}
 
-	imgInfo, err := dbImageGet(d.db, hash, false, false)
-	if err != nil {
-		return SmartError(err)
-	}
-	hash = imgInfo.Fingerprint
+		imgInfo, err := dbImageGet(d.db, hash, false, false)
+		if err != nil {
+			return err
+		}
 
-	args := containerLXDArgs{
-		Ctype:        cTypeRegular,
-		Config:       req.Config,
-		Profiles:     req.Profiles,
-		Ephemeral:    req.Ephemeral,
-		BaseImage:    hash,
-		Architecture: imgInfo.Architecture,
-	}
+		hash = imgInfo.Fingerprint
 
-	run = shared.OperationWrap(func(id string) error {
-		_, err := containerLXDCreateFromImage(d, req.Name, args, hash)
+		args := containerLXDArgs{
+			Architecture: imgInfo.Architecture,
+			BaseImage:    hash,
+			Config:       req.Config,
+			Ctype:        cTypeRegular,
+			Ephemeral:    req.Ephemeral,
+			Profiles:     req.Profiles,
+		}
+
+		_, err = containerLXDCreateFromImage(d, req.Name, args, hash)
 		return err
-	})
+	}
 
-	resources := make(map[string][]string)
+	resources := map[string][]string{}
 	resources["containers"] = []string{req.Name}
 
-	return &asyncResponse{run: run, resources: resources}
+	op, err := operationCreate(operationClassTask, resources, nil, run, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 func createFromNone(d *Daemon, req *containerPostReq) Response {
 	args := containerLXDArgs{
-		Ctype:     cTypeRegular,
-		Config:    req.Config,
-		Profiles:  req.Profiles,
-		Ephemeral: req.Ephemeral,
+		Architecture: req.Architecture,
+		Config:       req.Config,
+		Ctype:        cTypeRegular,
+		Ephemeral:    req.Ephemeral,
+		Profiles:     req.Profiles,
 	}
 
-	run := shared.OperationWrap(func(id string) error {
+	run := func(op *operation) error {
 		_, err := containerLXDCreateAsEmpty(d, req.Name, args)
 		return err
-	})
+	}
 
-	resources := make(map[string][]string)
+	resources := map[string][]string{}
 	resources["containers"] = []string{req.Name}
 
-	return &asyncResponse{run: run, resources: resources}
+	op, err := operationCreate(operationClassTask, resources, nil, run, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 func createFromMigration(d *Daemon, req *containerPostReq) Response {
@@ -94,13 +105,15 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 		return NotImplemented
 	}
 
-	run := func(id string) shared.OperationResult {
+	run := func(op *operation) error {
 		createArgs := containerLXDArgs{
-			Ctype:     cTypeRegular,
-			Config:    req.Config,
-			Profiles:  req.Profiles,
-			Ephemeral: req.Ephemeral,
-			BaseImage: req.Source.BaseImage,
+			Architecture: req.Architecture,
+			BaseImage:    req.Source.BaseImage,
+			Config:       req.Config,
+			Ctype:        cTypeRegular,
+			Devices:      req.Devices,
+			Ephemeral:    req.Ephemeral,
+			Profiles:     req.Profiles,
 		}
 
 		var c container
@@ -109,19 +122,19 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 				d, req.Name, createArgs, req.Source.BaseImage)
 
 			if err != nil {
-				return shared.OperationError(err)
+				return err
 			}
 		} else {
 			c, err = containerLXDCreateAsEmpty(d, req.Name, createArgs)
 			if err != nil {
-				return shared.OperationError(err)
+				return err
 			}
 		}
 
 		config, err := shared.GetTLSConfig(d.certf, d.keyf)
 		if err != nil {
 			c.Delete()
-			return shared.OperationError(err)
+			return err
 		}
 
 		args := MigrationSinkArgs{
@@ -136,7 +149,7 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 		sink, err := NewMigrationSink(&args)
 		if err != nil {
 			c.Delete()
-			return shared.OperationError(err)
+			return err
 		}
 
 		// Start the storage for this container (LVM mount/umount)
@@ -147,23 +160,28 @@ func createFromMigration(d *Daemon, req *containerPostReq) Response {
 		if err != nil {
 			c.StorageStop()
 			c.Delete()
-			return shared.OperationError(fmt.Errorf("Error transferring container data: %s", err))
+			return fmt.Errorf("Error transferring container data: %s", err)
 		}
 
 		defer c.StorageStop()
 
 		err = c.TemplateApply("copy")
 		if err != nil {
-			return shared.OperationError(err)
+			return err
 		}
 
-		return shared.OperationError(nil)
+		return nil
 	}
 
-	resources := make(map[string][]string)
+	resources := map[string][]string{}
 	resources["containers"] = []string{req.Name}
 
-	return &asyncResponse{run: run, resources: resources}
+	op, err := operationCreate(operationClassTask, resources, nil, run, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 func createFromCopy(d *Daemon, req *containerPostReq) Response {
@@ -176,7 +194,8 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 		return SmartError(err)
 	}
 
-	sourceConfig := source.Config()
+	// Config override
+	sourceConfig := source.BaseConfig()
 
 	if req.Config == nil {
 		req.Config = make(map[string]string)
@@ -188,34 +207,48 @@ func createFromCopy(d *Daemon, req *containerPostReq) Response {
 				log.Ctx{"key": key})
 			continue
 		}
+
+		_, exists := req.Config[key]
+		if exists {
+			continue
+		}
+
 		req.Config[key] = value
 	}
 
+	// Profiles override
 	if req.Profiles == nil {
 		req.Profiles = source.Profiles()
 	}
 
 	args := containerLXDArgs{
-		Ctype:     cTypeRegular,
-		Config:    req.Config,
-		Profiles:  req.Profiles,
-		Ephemeral: req.Ephemeral,
-		BaseImage: req.Source.BaseImage,
+		Architecture: source.Architecture(),
+		BaseImage:    req.Source.BaseImage,
+		Config:       req.Config,
+		Ctype:        cTypeRegular,
+		Devices:      source.BaseDevices(),
+		Ephemeral:    req.Ephemeral,
+		Profiles:     req.Profiles,
 	}
 
-	run := func(id string) shared.OperationResult {
+	run := func(op *operation) error {
 		_, err := containerLXDCreateAsCopy(d, req.Name, args, source)
 		if err != nil {
-			return shared.OperationError(err)
+			return err
 		}
 
-		return shared.OperationSuccess
+		return nil
 	}
 
-	resources := make(map[string][]string)
+	resources := map[string][]string{}
 	resources["containers"] = []string{req.Name, req.Source.Source}
 
-	return &asyncResponse{run: run, resources: resources}
+	op, err := operationCreate(operationClassTask, resources, nil, run, nil, nil)
+	if err != nil {
+		return InternalError(err)
+	}
+
+	return OperationResponse(op)
 }
 
 func containersPost(d *Daemon, r *http.Request) Response {
