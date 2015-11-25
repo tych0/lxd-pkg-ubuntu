@@ -37,7 +37,7 @@ func (c *imageCmd) usage() string {
 	return gettext.Gettext(
 		`Manipulate container images.
 
-lxc image import <tarball> [rootfs tarball] [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]
+lxc image import <tarball> [rootfs tarball|URL] [target] [--public] [--created-at=ISO-8601] [--expires-at=ISO-8601] [--fingerprint=FINGERPRINT] [prop=value]
 
 lxc image copy [remote:]<image> <remote>: [--alias=ALIAS].. [--copy-aliases] [--public]
 lxc image delete [remote:]<image>
@@ -215,9 +215,12 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 		}
 		fmt.Printf(gettext.Gettext("Fingerprint: %s")+"\n", info.Fingerprint)
 		public := gettext.Gettext("no")
+
+		// FIXME: InterfaceToBool is there for backward compatibility
 		if shared.InterfaceToBool(info) {
 			public = gettext.Gettext("yes")
 		}
+
 		fmt.Printf(gettext.Gettext("Size: %.2fMB")+"\n", float64(info.Size)/1024.0/1024.0)
 		arch, _ := shared.ArchitectureName(info.Architecture)
 		fmt.Printf(gettext.Gettext("Architecture: %s")+"\n", arch)
@@ -248,6 +251,7 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			return errArgs
 		}
 
+		var fingerprint string
 		var imageFile string
 		var rootfsFile string
 		var properties []string
@@ -283,11 +287,17 @@ func (c *imageCmd) run(config *lxd.Config, args []string) error {
 			return err
 		}
 
-		fingerprint, err := d.PostImage(imageFile, rootfsFile, properties, publicImage, addAliases)
+		if strings.HasPrefix(imageFile, "https://") {
+			fingerprint, err = d.PostImageURL(imageFile, publicImage, addAliases)
+		} else if strings.HasPrefix(imageFile, "http://") {
+			return fmt.Errorf(gettext.Gettext("Only https:// is supported for remote image import."))
+		} else {
+			fingerprint, err = d.PostImage(imageFile, rootfsFile, properties, publicImage, addAliases)
+		}
+
 		if err != nil {
 			return err
 		}
-
 		fmt.Printf(gettext.Gettext("Image imported with fingerprint: %s")+"\n", fingerprint)
 
 		return nil
@@ -436,9 +446,12 @@ func showImages(images []shared.ImageInfo) error {
 		fp := image.Fingerprint[0:12]
 		public := gettext.Gettext("no")
 		description := findDescription(image.Properties)
+
+		// FIXME: InterfaceToBool is there for backward compatibility
 		if shared.InterfaceToBool(image.Public) {
 			public = gettext.Gettext("yes")
 		}
+
 		const layout = "Jan 2, 2006 at 3:04pm (MST)"
 		uploaded := time.Unix(image.UploadDate, 0).Format(layout)
 		arch, _ := shared.ArchitectureName(image.Architecture)

@@ -9,27 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"gopkg.in/lxc/go-lxc.v2"
 
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
-
-type execWs struct {
-	command          []string
-	container        *lxc.Container
-	rootUid          int
-	rootGid          int
-	options          lxc.AttachOptions
-	conns            map[int]*websocket.Conn
-	allConnected     chan bool
-	controlConnected chan bool
-	interactive      bool
-	done             chan shared.OperationResult
-	fds              map[int]string
-}
 
 type commandPostContent struct {
 	Command     []string          `json:"command"`
@@ -57,11 +42,13 @@ type containerPostBody struct {
 }
 
 type containerPostReq struct {
-	Name      string               `json:"name"`
-	Source    containerImageSource `json:"source"`
-	Config    map[string]string    `json:"config"`
-	Profiles  []string             `json:"profiles"`
-	Ephemeral bool                 `json:"ephemeral"`
+	Architecture int                  `json:"architecture"`
+	Config       map[string]string    `json:"config"`
+	Devices      shared.Devices       `json:"devices"`
+	Ephemeral    bool                 `json:"ephemeral"`
+	Name         string               `json:"name"`
+	Profiles     []string             `json:"profiles"`
+	Source       containerImageSource `json:"source"`
 }
 
 type containerImageSource struct {

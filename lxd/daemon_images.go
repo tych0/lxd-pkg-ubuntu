@@ -14,10 +14,48 @@ import (
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
+type Progress struct {
+	io.Reader
+	total      int64
+	length     int64
+	percentage float64
+	op         *operation
+}
+
+func (pt *Progress) Read(p []byte) (int, error) {
+	n, err := pt.Reader.Read(p)
+	if n > 0 {
+		pt.total += int64(n)
+		percentage := float64(pt.total) / float64(pt.length) * float64(100)
+
+		if percentage-pt.percentage > 9 && pt.op != nil {
+			meta := pt.op.metadata
+			if meta == nil {
+				meta = make(map[string]interface{})
+			}
+
+			progressInt := 10 - (int(percentage) % 10) + int(percentage)
+			if progressInt > 100 {
+				progressInt = 100
+			}
+			progress := fmt.Sprintf("%d%%", progressInt)
+
+			if meta["download_progress"] != progress {
+				meta["download_progress"] = progress
+				pt.op.UpdateMetadata(meta)
+			}
+
+			pt.percentage = percentage
+		}
+	}
+
+	return n, err
+}
+
 // ImageDownload checks if we have that Image Fingerprint else
 // downloads the image from a remote server.
-func (d *Daemon) ImageDownload(
-	server, fp string, secret string, forContainer bool) error {
+func (d *Daemon) ImageDownload(op *operation,
+	server, fp string, secret string, forContainer bool, directDownload bool) error {
 
 	if _, err := dbImageGet(d.db, fp, false, false); err == nil {
 		shared.Log.Debug("Image already exists in the db", log.Ctx{"image": fp})
@@ -80,42 +118,46 @@ func (d *Daemon) ImageDownload(
 		d.imagesDownloadingLock.Unlock()
 	}()
 
-	/* grab the metadata from /1.0/images/%s */
-	var url string
-	if secret != "" {
-		url = fmt.Sprintf(
-			"%s/%s/images/%s?secret=%s",
-			server, shared.APIVersion, fp, secret)
+	exporturl := server
 
-	} else {
-		url = fmt.Sprintf("%s/%s/images/%s", server, shared.APIVersion, fp)
-	}
+	var info shared.ImageInfo
+	info.Fingerprint = fp
 
-	resp, err := d.httpGetSync(url)
-	if err != nil {
-		shared.Log.Error(
-			"Failed to download image metadata",
-			log.Ctx{"image": fp, "err": err})
+	if !directDownload {
+		/* grab the metadata from /1.0/images/%s */
+		var url string
+		if secret != "" {
+			url = fmt.Sprintf(
+				"%s/%s/images/%s?secret=%s",
+				server, shared.APIVersion, fp, secret)
+		} else {
+			url = fmt.Sprintf("%s/%s/images/%s", server, shared.APIVersion, fp)
+		}
 
-		return nil
-	}
+		resp, err := d.httpGetSync(url)
+		if err != nil {
+			shared.Log.Error(
+				"Failed to download image metadata",
+				log.Ctx{"image": fp, "err": err})
 
-	info := shared.ImageInfo{}
-	if err := json.Unmarshal(resp.Metadata, &info); err != nil {
-		return err
-	}
+			return err
+		}
 
-	/* now grab the actual file from /1.0/images/%s/export */
-	var exporturl string
-	if secret != "" {
-		exporturl = fmt.Sprintf(
-			"%s/%s/images/%s/export?secret=%s",
-			server, shared.APIVersion, fp, secret)
+		if err := json.Unmarshal(resp.Metadata, &info); err != nil {
+			return err
+		}
 
-	} else {
-		exporturl = fmt.Sprintf(
-			"%s/%s/images/%s/export",
-			server, shared.APIVersion, fp)
+		/* now grab the actual file from /1.0/images/%s/export */
+		if secret != "" {
+			exporturl = fmt.Sprintf(
+				"%s/%s/images/%s/export?secret=%s",
+				server, shared.APIVersion, fp, secret)
+
+		} else {
+			exporturl = fmt.Sprintf(
+				"%s/%s/images/%s/export",
+				server, shared.APIVersion, fp)
+		}
 	}
 
 	raw, err := d.httpGetFile(exporturl)
@@ -125,6 +167,7 @@ func (d *Daemon) ImageDownload(
 			log.Ctx{"image": fp, "err": err})
 		return err
 	}
+	info.Size = raw.ContentLength
 
 	destDir := shared.VarPath("images")
 	destName := filepath.Join(destDir, fp)
@@ -137,9 +180,11 @@ func (d *Daemon) ImageDownload(
 		ctype = "application/octet-stream"
 	}
 
+	body := &Progress{Reader: raw.Body, length: raw.ContentLength, op: op}
+
 	if ctype == "multipart/form-data" {
 		// Parse the POST data
-		mr := multipart.NewReader(raw.Body, ctypeParams["boundary"])
+		mr := multipart.NewReader(body, ctypeParams["boundary"])
 
 		// Get the metadata tarball
 		part, err := mr.NextPart()
@@ -159,7 +204,7 @@ func (d *Daemon) ImageDownload(
 			return fmt.Errorf("Invalid multipart image")
 		}
 
-		destName := filepath.Join(destDir, info.Fingerprint)
+		destName = filepath.Join(destDir, info.Fingerprint)
 		f, err := os.Create(destName)
 		if err != nil {
 			shared.Log.Error(
@@ -216,7 +261,7 @@ func (d *Daemon) ImageDownload(
 			return err
 		}
 	} else {
-		destName := filepath.Join(destDir, info.Fingerprint)
+		destName = filepath.Join(destDir, info.Fingerprint)
 
 		f, err := os.Create(destName)
 		if err != nil {
@@ -227,7 +272,7 @@ func (d *Daemon) ImageDownload(
 			return err
 		}
 
-		_, err = io.Copy(f, raw.Body)
+		_, err = io.Copy(f, body)
 		f.Close()
 
 		if err != nil {
@@ -236,6 +281,18 @@ func (d *Daemon) ImageDownload(
 				log.Ctx{"image": fp, "err": err})
 			return err
 		}
+	}
+
+	if directDownload {
+		imageMeta, err := getImageMetadata(destName)
+		if err != nil {
+			return err
+		}
+
+		info.Architecture, _ = shared.ArchitectureId(imageMeta.Architecture)
+		info.CreationDate = imageMeta.CreationDate
+		info.ExpiryDate = imageMeta.ExpiryDate
+		info.Properties = imageMeta.Properties
 	}
 
 	// By default, make all downloaded images private

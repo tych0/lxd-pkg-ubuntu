@@ -24,7 +24,7 @@ core.trust\_password            | string        | -                         | Pa
 storage.lvm\_vg\_name           | string        | -                         | LVM Volume Group name to be used for container and image storage. A default Thin Pool is created using 100% of the free space in the Volume Group, unless `storage.lvm_thinpool_name` is set.
 storage.lvm\_thinpool\_name     | string        | "LXDPool"                 | LVM Thin Pool to use within the Volume Group specified in `storage.lvm_vg_name`, if the default pool parameters are undesirable.
 storage.zfs\_pool\_name         | string        | -                         | ZFS pool name
-images.compression\_algorightm  | string        | gzip                      | What compression mechanism to use for new images (bzip2, gzip, lzma, xz or none)
+images.compression\_algorithm   | string        | gzip                      | Compression algorithm to use for new images (bzip2, gzip, lzma, xz or none)
 images.remote\_cache\_expiry    | integer       | 10                        | Number of days after which an unused cached remote image will be flushed
 
 Those keys can be set using the lxc tool with:
@@ -60,7 +60,7 @@ boot.autostart.delay        | int           | 0                 | Number of seco
 boot.autostart.priority     | int           | 0                 | What order to start the containers in (starting with highest)
 environment.\*              | string        | -                 | key/value environment variables to export to the container and set on exec
 limits.cpus                 | int           | 0 (all)           | Number of CPUs to expose to the container
-limits.memory               | int           | 0 (all)           | Size in MB of the memory allocation for the container
+limits.memory               | int           | 0 (all)           | Size in bytes of the memory allocation for the container (supported suffixes: k, K, m, M, g or G)
 raw.apparmor                | blob          | -                 | Apparmor profile entries to be appended to the generated profile
 raw.lxc                     | blob          | -                 | Raw LXC configuration to be appended to the generated one
 security.nesting            | boolean       | false             | Support running lxd (nested) inside the container

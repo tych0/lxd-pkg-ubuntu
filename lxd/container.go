@@ -115,13 +115,13 @@ func containerPath(name string, isSnapshot bool) string {
 // containerLXDArgs contains every argument needed to create an LXD Container
 type containerLXDArgs struct {
 	ID           int // Leave it empty when you create one.
-	Ctype        containerType
-	Config       map[string]string
-	Profiles     []string
-	Ephemeral    bool
-	BaseImage    string
 	Architecture int
+	BaseImage    string
+	Config       map[string]string
+	Ctype        containerType
 	Devices      shared.Devices
+	Ephemeral    bool
+	Profiles     []string
 }
 
 type containerLXD struct {
@@ -172,6 +172,8 @@ type container interface {
 	Config() map[string]string
 	ConfigKeySet(key string, value string) error
 	Devices() shared.Devices
+	BaseConfig() map[string]string
+	BaseDevices() shared.Devices
 	Profiles() []string
 	Path(newName string) string
 	RootfsPath() string
@@ -347,11 +349,6 @@ func containerLXDCreateAsCopy(d *Daemon, name string,
 
 	c, err := containerLXDCreateInternal(d, name, args)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := c.ConfigReplace(args); err != nil {
-		c.Delete()
 		return nil, err
 	}
 
@@ -575,8 +572,9 @@ func containerLXDLoad(d *Daemon, name string) (container, error) {
 }
 
 // init prepares the LXContainer for this LXD Container
-// TODO: This gets called on each load of the container,
-//       we might be able to split this is up into c.Start().
+// TODO: This gets called on each load of the container, and things that modify
+//       stuff other than the config should probably go somewhere else. N.B.
+//       though, that they should go into containerUp instead of Start.
 func (c *containerLXD) init() error {
 	templateConfBase := "ubuntu"
 	templateConfDir := os.Getenv("LXD_LXC_TEMPLATE_CONFIG")
@@ -731,10 +729,12 @@ func (c *containerLXD) RenderState() (*shared.ContainerState, error) {
 	if c.IsRunning() {
 		pid := c.InitPID()
 		status.Init = pid
+		status.Processcount = c.processcountGet()
 		status.Ips = c.iPsGet()
 	}
 
 	return &shared.ContainerState{
+		Architecture:    c.architecture,
 		Name:            c.name,
 		Profiles:        c.profiles,
 		Config:          c.baseConfig,
@@ -884,6 +884,28 @@ func (c *containerLXD) setupUnixDev(m shared.Device) error {
 	return c.c.SetConfigItem("lxc.mount.entry", entry)
 }
 
+/* Here are some things that we have to do every time a container comes "up",
+ * either for Start() or StartFromMigration(). We separate these from init
+ * since they may actually do stuff on the host, instead of just preparing the
+ * container's configuration.
+ */
+func (c *containerLXD) containerUp() error {
+
+	/*
+	 * add the lxc.* entries for the configured devices,
+	 * and create if necessary
+	 */
+	if err := c.applyDevices(); err != nil {
+		return err
+	}
+
+	if err := c.mountShared(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (c *containerLXD) Start() error {
 	if c.IsRunning() {
 		return fmt.Errorf("the container is already running")
@@ -907,15 +929,8 @@ func (c *containerLXD) Start() error {
 		return err
 	}
 
-	if err := c.mountShared(); err != nil {
-		return err
-	}
-
-	/*
-	 * add the lxc.* entries for the configured devices,
-	 * and create if necessary
-	 */
-	if err := c.applyDevices(); err != nil {
+	if err := c.containerUp(); err != nil {
+		c.StorageStop()
 		return err
 	}
 
@@ -1504,6 +1519,14 @@ func (c *containerLXD) ConfigReplace(newContainerArgs containerLXDArgs) error {
 	return nil
 }
 
+func (c *containerLXD) BaseConfig() map[string]string {
+	return c.baseConfig
+}
+
+func (c *containerLXD) BaseDevices() shared.Devices {
+	return c.baseDevices
+}
+
 func (c *containerLXD) Config() map[string]string {
 	return c.config
 }
@@ -1572,6 +1595,55 @@ func (c *containerLXD) ExportToTar(snap string, w io.Writer) error {
 			return err
 		}
 		if err := c.tarStoreFile(linkmap, offset, tw, fnam, fi); err != nil {
+			shared.Debugf("Error writing to tarfile: %s", err)
+			tw.Close()
+			return err
+		}
+	} else {
+		f, err := ioutil.TempFile("", "lxd_lxd_metadata_")
+		if err != nil {
+			tw.Close()
+			return err
+		}
+		defer os.Remove(f.Name())
+
+		var arch string
+		if c.cType == cTypeSnapshot {
+			parentName := strings.SplitN(c.name, shared.SnapshotDelimiter, 2)[0]
+			parent, err := containerLXDLoad(c.daemon, parentName)
+			if err != nil {
+				tw.Close()
+				return err
+			}
+
+			arch, _ = shared.ArchitectureName(parent.Architecture())
+		} else {
+			arch, _ = shared.ArchitectureName(c.architecture)
+		}
+
+		meta := imageMetadata{}
+
+		if arch != "" {
+			meta.Architecture = arch
+		}
+		meta.CreationDate = time.Now().UTC().Unix()
+
+		data, err := yaml.Marshal(&meta)
+		if err != nil {
+			tw.Close()
+			return err
+		}
+
+		f.Write(data)
+		f.Close()
+
+		fi, err := os.Lstat(f.Name())
+		if err != nil {
+			tw.Close()
+			return err
+		}
+
+		if err := c.tarStoreFile(linkmap, offset, tw, f.Name(), fi); err != nil {
 			shared.Debugf("Error writing to tarfile: %s", err)
 			tw.Close()
 			return err
@@ -2111,6 +2183,36 @@ func (c *containerLXD) iPsGet() []shared.Ip {
 	return ips
 }
 
+func (c *containerLXD) processcountGet() int {
+	pid := c.c.InitPid()
+	if pid == -1 { // container not running - we're done
+		return 0
+	}
+
+	pids := make([]int, 0)
+
+	pids = append(pids, pid)
+
+	for i := 0; i < len(pids); i++ {
+		fname := fmt.Sprintf("/proc/%d/task/%d/children", pids[i], pids[i])
+		fcont, err := ioutil.ReadFile(fname)
+		if err != nil {
+			// the process terminated during execution of this loop
+			continue
+		}
+		content := strings.Split(string(fcont), " ")
+		for j := 0; j < len(content); j++ {
+			pid, err := strconv.Atoi(content[j])
+			if err == nil {
+				pids = append(pids, pid)
+			}
+		}
+	}
+
+	return len(pids)
+
+}
+
 func (c *containerLXD) tarStoreFile(linkmap map[uint64]string, offset int, tw *tar.Writer, path string, fi os.FileInfo) error {
 	var err error
 	var major, minor, nlink int
@@ -2224,6 +2326,10 @@ func (c *containerLXD) StartFromMigration(imagesDir string) error {
 	}
 	f.Close()
 	os.Remove(f.Name())
+
+	if err := c.containerUp(); err != nil {
+		return err
+	}
 
 	if err := c.c.SaveConfigFile(f.Name()); err != nil {
 		return err
