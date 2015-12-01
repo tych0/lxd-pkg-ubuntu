@@ -1,3 +1,10 @@
+lxd (0.23-0ubuntu2) xenial; urgency=medium
+
+  * Cherrypick https://github.com/lxc/lxd/pull/1358
+  * Add s390x dependencies.
+
+ -- Dimitri John Ledkov <xnox@ubuntu.com>  Thu, 26 Nov 2015 10:56:04 +0000
+
 lxd (0.23-0ubuntu1) xenial; urgency=medium
 
   * New upstream release (0.23)
