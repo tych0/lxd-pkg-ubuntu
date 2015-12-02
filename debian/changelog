@@ -1,3 +1,9 @@
+lxd (0.23-0ubuntu3) xenial; urgency=medium
+
+  * Fix systemd resource limits. (LP: #1521980)
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 02 Dec 2015 12:34:14 -0500
+
 lxd (0.23-0ubuntu2) xenial; urgency=medium
 
   * Cherrypick https://github.com/lxc/lxd/pull/1358
