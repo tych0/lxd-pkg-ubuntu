@@ -1,3 +1,22 @@
+lxd (0.24-0ubuntu1) xenial; urgency=medium
+
+  * New upstream release (0.24)
+  * Drop all patches (merged upstream)
+  * Update debian/copyright file (change of gettext and uuid dependencies)
+  * For the following dependencies, use the packaged version rather than
+    the one bundled within the LXD source:
+    - golang-go.crypto-dev
+    - golang-context-dev
+    - golang-github-gorilla-mux-dev
+    - golang-github-mattn-go-sqlite3-dev
+    - golang-github-olekukonko-tablewriter-dev
+    - golang-gopkg-tomb.v2-dev
+    - golang-goprotobuf-dev
+    - golang-petname-dev
+    - golang-yaml.v2-dev
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Wed, 09 Dec 2015 00:33:28 -0500
+
 lxd (0.23-0ubuntu3) xenial; urgency=medium
 
   * Fix systemd resource limits. (LP: #1521980)
