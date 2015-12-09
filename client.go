@@ -21,21 +21,22 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chai2010/gettext-go/gettext"
 	"github.com/gorilla/websocket"
 
+	"github.com/lxc/lxd/i18n"
 	"github.com/lxc/lxd/shared"
 )
 
 // Client can talk to a LXD daemon.
 type Client struct {
-	config          Config
-	Remote          *RemoteConfig
-	name            string
-	http            http.Client
-	BaseURL         string
-	BaseWSURL       string
-	Transport       string
+	BaseURL   string
+	BaseWSURL string
+	Config    Config
+	Http      http.Client
+	Name      string
+	Remote    *RemoteConfig
+	Transport string
+
 	certf           string
 	keyf            string
 	websocketDialer websocket.Dialer
@@ -75,8 +76,7 @@ type Response struct {
 	StatusCode int    `json:"status_code"`
 
 	/* Valid only for Async responses */
-	Operation string              `json:"operation"`
-	Resources map[string][]string `json:"resources"`
+	Operation string `json:"operation"`
 
 	/* Valid only for Error responses */
 	Code  int    `json:"error_code"`
@@ -110,7 +110,7 @@ func (r *Response) MetadataAsOperation() (*shared.Operation, error) {
 // response (e.g. to inspect the error code).
 func ParseResponse(r *http.Response) (*Response, error) {
 	if r == nil {
-		return nil, fmt.Errorf(gettext.Gettext("no response!"))
+		return nil, fmt.Errorf(i18n.G("no response!"))
 	}
 	defer r.Body.Close()
 	ret := Response{}
@@ -146,7 +146,7 @@ func HoistResponse(r *http.Response, rtype ResponseType) (*Response, error) {
 	}
 
 	if resp.Type != rtype {
-		return nil, fmt.Errorf(gettext.Gettext("got bad response type, expected %s got %s"), rtype, resp.Type)
+		return nil, fmt.Errorf(i18n.G("got bad response type, expected %s got %s"), rtype, resp.Type)
 	}
 
 	return resp, nil
@@ -165,9 +165,9 @@ func readMyCert() (string, string, error) {
  * load the server cert from disk
  */
 func (c *Client) loadServerCert() {
-	cert, err := shared.ReadCert(ServerCertPath(c.name))
+	cert, err := shared.ReadCert(ServerCertPath(c.Name))
 	if err != nil {
-		shared.Debugf("Error reading the server certificate for %s: %v", c.name, err)
+		shared.Debugf("Error reading the server certificate for %s: %v", c.Name, err)
 		return
 	}
 
@@ -177,14 +177,14 @@ func (c *Client) loadServerCert() {
 // NewClient returns a new LXD client.
 func NewClient(config *Config, remote string) (*Client, error) {
 	c := Client{
-		config: *config,
-		http:   http.Client{},
+		Config: *config,
+		Http:   http.Client{},
 	}
 
-	c.name = remote
+	c.Name = remote
 
 	if remote == "" {
-		return nil, fmt.Errorf(gettext.Gettext("A remote name must be provided."))
+		return nil, fmt.Errorf(i18n.G("A remote name must be provided."))
 	}
 
 	if r, ok := config.Remotes[remote]; ok {
@@ -209,7 +209,7 @@ func NewClient(config *Config, remote string) (*Client, error) {
 				}
 				return net.DialUnix("unix", nil, raddr)
 			}
-			c.http.Transport = &http.Transport{Dial: uDial}
+			c.Http.Transport = &http.Transport{Dial: uDial}
 			c.websocketDialer.NetDial = uDial
 			c.Remote = &r
 		} else {
@@ -245,12 +245,12 @@ func NewClient(config *Config, remote string) (*Client, error) {
 				c.BaseWSURL = "wss://" + r.Addr
 			}
 			c.Transport = "https"
-			c.http.Transport = tr
+			c.Http.Transport = tr
 			c.loadServerCert()
 			c.Remote = &r
 		}
 	} else {
-		return nil, fmt.Errorf(gettext.Gettext("unknown remote name: %q"), remote)
+		return nil, fmt.Errorf(i18n.G("unknown remote name: %q"), remote)
 	}
 
 	if err := c.Finger(); err != nil {
@@ -272,11 +272,11 @@ func (c *Client) Addresses() ([]string, error) {
 	} else if c.Transport == "https" {
 		addresses = append(addresses, c.BaseURL[8:])
 	} else {
-		return nil, fmt.Errorf(gettext.Gettext("unknown transport type: %s"), c.Transport)
+		return nil, fmt.Errorf(i18n.G("unknown transport type: %s"), c.Transport)
 	}
 
 	if len(addresses) == 0 {
-		return nil, fmt.Errorf(gettext.Gettext("The source remote isn't available over the network"))
+		return nil, fmt.Errorf(i18n.G("The source remote isn't available over the network"))
 	}
 
 	return addresses, nil
@@ -296,7 +296,7 @@ func (c *Client) baseGet(getUrl string) (*Response, error) {
 
 	req.Header.Set("User-Agent", shared.UserAgent)
 
-	resp, err := c.http.Do(req)
+	resp, err := c.Http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (c *Client) baseGet(getUrl string) (*Response, error) {
 	if c.scert != nil && resp.TLS != nil {
 		if !bytes.Equal(resp.TLS.PeerCertificates[0].Raw, c.scert.Raw) {
 			pUrl, _ := url.Parse(getUrl)
-			return nil, fmt.Errorf(gettext.Gettext("Server certificate for host %s has changed. Add correct certificate or remove certificate in %s"), pUrl.Host, ConfigPath("servercerts"))
+			return nil, fmt.Errorf(i18n.G("Server certificate for host %s has changed. Add correct certificate or remove certificate in %s"), pUrl.Host, ConfigPath("servercerts"))
 		}
 	}
 
@@ -339,7 +339,7 @@ func (c *Client) put(base string, args shared.Jmap, rtype ResponseType) (*Respon
 	req.Header.Set("User-Agent", shared.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.Http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +365,7 @@ func (c *Client) post(base string, args shared.Jmap, rtype ResponseType) (*Respo
 	req.Header.Set("User-Agent", shared.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.Http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +380,7 @@ func (c *Client) getRaw(uri string) (*http.Response, error) {
 	}
 	req.Header.Set("User-Agent", shared.UserAgent)
 
-	raw, err := c.http.Do(req)
+	raw, err := c.Http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +391,7 @@ func (c *Client) getRaw(uri string) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf(gettext.Gettext("expected error, got %s"), resp)
+		return nil, fmt.Errorf(i18n.G("expected error, got %s"), resp)
 	}
 
 	return raw, nil
@@ -415,7 +415,7 @@ func (c *Client) delete(base string, args shared.Jmap, rtype ResponseType) (*Res
 	req.Header.Set("User-Agent", shared.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.Http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -431,27 +431,6 @@ func (c *Client) websocket(operation string, secret string) (*websocket.Conn, er
 
 func (c *Client) url(elem ...string) string {
 	return c.BaseURL + "/" + path.Join(elem...)
-}
-
-func unixDial(networ, addr string) (net.Conn, error) {
-	var raddr *net.UnixAddr
-	var err error
-	if addr == "unix.socket:80" {
-		raddr, err = net.ResolveUnixAddr("unix", shared.VarPath("unix.socket"))
-		if err != nil {
-			return nil, fmt.Errorf(gettext.Gettext("cannot resolve unix socket address: %v"), err)
-		}
-	} else { // TODO - I think this is dead code
-		raddr, err = net.ResolveUnixAddr("unix", addr)
-		if err != nil {
-			return nil, fmt.Errorf(gettext.Gettext("cannot resolve unix socket address: %v"), err)
-		}
-	}
-	return net.DialUnix("unix", nil, raddr)
-}
-
-var unixTransport = http.Transport{
-	Dial: unixDial,
 }
 
 func (c *Client) GetServerConfig() (*Response, error) {
@@ -476,7 +455,7 @@ func (c *Client) Finger() error {
 	}
 
 	if serverAPICompat != shared.APICompat {
-		return fmt.Errorf(gettext.Gettext("api version mismatch: mine: %q, daemon: %q"), shared.APICompat, serverAPICompat)
+		return fmt.Errorf(i18n.G("api version mismatch: mine: %q, daemon: %q"), shared.APICompat, serverAPICompat)
 	}
 	shared.Debugf("Pong received")
 	return nil
@@ -618,7 +597,7 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 			dest.DeleteAlias(alias.Name)
 			err = dest.PostAlias(alias.Name, alias.Description, info.Fingerprint)
 			if err != nil {
-				fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias.Name)
+				fmt.Printf(i18n.G("Error adding alias %s")+"\n", alias.Name)
 			}
 		}
 	}
@@ -628,7 +607,7 @@ func (c *Client) CopyImage(image string, dest *Client, copy_aliases bool, aliase
 		dest.DeleteAlias(alias)
 		err = dest.PostAlias(alias, alias, info.Fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
+			fmt.Printf(i18n.G("Error adding alias %s")+"\n", alias)
 		}
 	}
 
@@ -650,7 +629,7 @@ func (c *Client) ExportImage(image string, target string) (*Response, string, er
 	// Deal with split images
 	if ctype == "multipart/form-data" {
 		if !shared.IsDir(target) {
-			return nil, "", fmt.Errorf(gettext.Gettext("Split images can only be written to a directory."))
+			return nil, "", fmt.Errorf(i18n.G("Split images can only be written to a directory."))
 		}
 
 		// Parse the POST data
@@ -783,7 +762,7 @@ func (c *Client) PostImageURL(imageFile string, public bool, aliases []string) (
 	}
 
 	if op.Metadata == nil {
-		return "", fmt.Errorf(gettext.Gettext("Missing operation metadata"))
+		return "", fmt.Errorf(i18n.G("Missing operation metadata"))
 	}
 
 	fingerprint, err := op.Metadata.GetString("fingerprint")
@@ -796,7 +775,7 @@ func (c *Client) PostImageURL(imageFile string, public bool, aliases []string) (
 		c.DeleteAlias(alias)
 		err = c.PostAlias(alias, alias, fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
+			fmt.Printf(i18n.G("Error adding alias %s")+"\n", alias)
 		}
 	}
 
@@ -880,7 +859,7 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 			if eqIndex > -1 {
 				imgProps.Set(value[:eqIndex], value[eqIndex+1:])
 			} else {
-				return "", fmt.Errorf(gettext.Gettext("Bad image property: %s"), value)
+				return "", fmt.Errorf(i18n.G("Bad image property: %s"), value)
 			}
 
 		}
@@ -888,7 +867,7 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 		req.Header.Set("X-LXD-properties", imgProps.Encode())
 	}
 
-	raw, err := c.http.Do(req)
+	raw, err := c.Http.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -913,7 +892,7 @@ func (c *Client) PostImage(imageFile string, rootfsFile string, properties []str
 		c.DeleteAlias(alias)
 		err = c.PostAlias(alias, alias, fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
+			fmt.Printf(i18n.G("Error adding alias %s")+"\n", alias)
 		}
 	}
 
@@ -991,7 +970,7 @@ func (c *Client) ListAliases() ([]shared.ImageAlias, error) {
 
 func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	if !c.scertDigestSet {
-		return fmt.Errorf(gettext.Gettext("No certificate on this connection"))
+		return fmt.Errorf(i18n.G("No certificate on this connection"))
 	}
 
 	if c.scert != nil {
@@ -1004,14 +983,14 @@ func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	})
 	if err != nil {
 		if acceptCert == false {
-			fmt.Printf(gettext.Gettext("Certificate fingerprint: %x")+"\n", c.scertDigest)
-			fmt.Printf(gettext.Gettext("ok (y/n)?") + " ")
+			fmt.Printf(i18n.G("Certificate fingerprint: %x")+"\n", c.scertDigest)
+			fmt.Printf(i18n.G("ok (y/n)?") + " ")
 			line, err := shared.ReadStdin()
 			if err != nil {
 				return err
 			}
 			if len(line) < 1 || line[0] != 'y' && line[0] != 'Y' {
-				return fmt.Errorf(gettext.Gettext("Server certificate NACKed by user"))
+				return fmt.Errorf(i18n.G("Server certificate NACKed by user"))
 			}
 		}
 	}
@@ -1020,9 +999,9 @@ func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	dnam := ConfigPath("servercerts")
 	err = os.MkdirAll(dnam, 0750)
 	if err != nil {
-		return fmt.Errorf(gettext.Gettext("Could not create server cert dir"))
+		return fmt.Errorf(i18n.G("Could not create server cert dir"))
 	}
-	certf := fmt.Sprintf("%s/%s.crt", dnam, c.name)
+	certf := fmt.Sprintf("%s/%s.crt", dnam, c.Name)
 	certOut, err := os.Create(certf)
 	if err != nil {
 		return err
@@ -1110,13 +1089,13 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 	source := shared.Jmap{"type": "image"}
 
 	if image == "" {
-		return nil, fmt.Errorf(gettext.Gettext("You must provide an image hash or alias name."))
+		return nil, fmt.Errorf(i18n.G("You must provide an image hash or alias name."))
 	}
 
-	if imgremote != c.name {
+	if imgremote != c.Name {
 		source["type"] = "image"
 		source["mode"] = "pull"
-		tmpremote, err = NewClient(&c.config, imgremote)
+		tmpremote, err = NewClient(&c.Config, imgremote)
 		if err != nil {
 			return nil, err
 		}
@@ -1132,7 +1111,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 		}
 
 		if len(architectures) != 0 && !shared.IntInSlice(imageinfo.Architecture, architectures) {
-			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
+			return nil, fmt.Errorf(i18n.G("The image architecture is incompatible with the target server"))
 		}
 
 		// FIXME: InterfaceToBool is there for backward compatibility
@@ -1173,11 +1152,11 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 
 		imageinfo, err := c.GetImageInfo(fingerprint)
 		if err != nil {
-			return nil, fmt.Errorf(gettext.Gettext("can't get info for image '%s': %s"), image, err)
+			return nil, fmt.Errorf(i18n.G("can't get info for image '%s': %s"), image, err)
 		}
 
 		if len(architectures) != 0 && !shared.IntInSlice(imageinfo.Architecture, architectures) {
-			return nil, fmt.Errorf(gettext.Gettext("The image architecture is incompatible with the target server"))
+			return nil, fmt.Errorf(i18n.G("The image architecture is incompatible with the target server"))
 		}
 		source["fingerprint"] = fingerprint
 	}
@@ -1202,7 +1181,7 @@ func (c *Client) Init(name string, imgremote string, image string, profiles *[]s
 
 	var resp *Response
 
-	if imgremote != c.name {
+	if imgremote != c.Name {
 		var addresses []string
 		addresses, err = tmpremote.Addresses()
 		if err != nil {
@@ -1345,10 +1324,10 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 		if err != nil {
 			return -1, err
 		}
-		defer conn.Close()
 
 		shared.WebsocketSendStream(conn, stdin)
 		<-shared.WebsocketRecvStream(stdout, conn)
+		conn.Close()
 
 	} else {
 		conns := make([]*websocket.Conn, 3)
@@ -1404,11 +1383,11 @@ func (c *Client) Exec(name string, cmd []string, env map[string]string,
 	}
 
 	if op.StatusCode != shared.Success {
-		return -1, fmt.Errorf(gettext.Gettext("got bad op status %s"), op.Status)
+		return -1, fmt.Errorf(i18n.G("got bad op status %s"), op.Status)
 	}
 
 	if op.Metadata == nil {
-		return -1, fmt.Errorf(gettext.Gettext("no metadata received"))
+		return -1, fmt.Errorf(i18n.G("no metadata received"))
 	}
 
 	return op.Metadata.GetInt("return")
@@ -1507,7 +1486,7 @@ func (c *Client) PushFile(container string, p string, gid int, uid int, mode os.
 	req.Header.Set("X-LXD-uid", strconv.FormatUint(uint64(uid), 10))
 	req.Header.Set("X-LXD-gid", strconv.FormatUint(uint64(gid), 10))
 
-	raw, err := c.http.Do(req)
+	raw, err := c.Http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1532,7 +1511,17 @@ func (c *Client) PullFile(container string, p string) (int, int, os.FileMode, io
 
 func (c *Client) GetMigrationSourceWS(container string) (*Response, error) {
 	body := shared.Jmap{"migration": true}
-	return c.post(fmt.Sprintf("containers/%s", container), body, Async)
+	url := fmt.Sprintf("containers/%s", container)
+	if shared.IsSnapshot(container) {
+		pieces := strings.SplitN(container, shared.SnapshotDelimiter, 2)
+		if len(pieces) != 2 {
+			return nil, fmt.Errorf("invalid snapshot name %s", container)
+		}
+
+		url = fmt.Sprintf("containers/%s/snapshots/%s", pieces[0], pieces[1])
+	}
+
+	return c.post(url, body, Async)
 }
 
 func (c *Client) MigrateFrom(name string, operation string, secrets map[string]string, architecture int, config map[string]string, devices shared.Devices, profiles []string, baseImage string, ephemeral bool) (*Response, error) {
@@ -1576,7 +1565,7 @@ func (c *Client) Rename(name string, newName string) (*Response, error) {
 /* Wait for an operation */
 func (c *Client) WaitFor(waitURL string) (*shared.Operation, error) {
 	if len(waitURL) < 1 {
-		return nil, fmt.Errorf(gettext.Gettext("invalid wait url %s"), waitURL)
+		return nil, fmt.Errorf(i18n.G("invalid wait url %s"), waitURL)
 	}
 
 	/* For convenience, waitURL is expected to be in the form of a
@@ -1772,7 +1761,7 @@ func (c *Client) SetProfileConfigItem(profile, key, value string) error {
 
 func (c *Client) PutProfile(name string, profile shared.ProfileConfig) error {
 	if profile.Name != name {
-		return fmt.Errorf(gettext.Gettext("Cannot change profile name"))
+		return fmt.Errorf(i18n.G("Cannot change profile name"))
 	}
 	body := shared.Jmap{"name": name, "config": profile.Config, "devices": profile.Devices}
 	_, err := c.put(fmt.Sprintf("profiles/%s", name), body, Sync)
@@ -1803,11 +1792,11 @@ func (c *Client) ListProfiles() ([]string, error) {
 		}
 
 		if count != 2 {
-			return nil, fmt.Errorf(gettext.Gettext("bad profile url %s"), url)
+			return nil, fmt.Errorf(i18n.G("bad profile url %s"), url)
 		}
 
 		if version != shared.APIVersion {
-			return nil, fmt.Errorf(gettext.Gettext("bad version in profile url"))
+			return nil, fmt.Errorf(i18n.G("bad version in profile url"))
 		}
 
 		names = append(names, name)
@@ -1849,14 +1838,14 @@ func (c *Client) ContainerDeviceAdd(container, devname, devtype string, props []
 	for _, p := range props {
 		results := strings.SplitN(p, "=", 2)
 		if len(results) != 2 {
-			return nil, fmt.Errorf(gettext.Gettext("no value found in %q"), p)
+			return nil, fmt.Errorf(i18n.G("no value found in %q"), p)
 		}
 		k := results[0]
 		v := results[1]
 		newdev[k] = v
 	}
 	if st.Devices != nil && st.Devices.ContainsName(devname) {
-		return nil, fmt.Errorf(gettext.Gettext("device already exists"))
+		return nil, fmt.Errorf(i18n.G("device already exists"))
 	}
 	newdev["type"] = devtype
 	if st.Devices == nil {
@@ -1906,14 +1895,14 @@ func (c *Client) ProfileDeviceAdd(profile, devname, devtype string, props []stri
 	for _, p := range props {
 		results := strings.SplitN(p, "=", 2)
 		if len(results) != 2 {
-			return nil, fmt.Errorf(gettext.Gettext("no value found in %q"), p)
+			return nil, fmt.Errorf(i18n.G("no value found in %q"), p)
 		}
 		k := results[0]
 		v := results[1]
 		newdev[k] = v
 	}
 	if st.Devices != nil && st.Devices.ContainsName(devname) {
-		return nil, fmt.Errorf(gettext.Gettext("device already exists"))
+		return nil, fmt.Errorf(i18n.G("device already exists"))
 	}
 	newdev["type"] = devtype
 	if st.Devices == nil {
@@ -1977,7 +1966,7 @@ func (c *Client) AsyncWaitMeta(resp *Response) (*shared.Jmap, error) {
 	}
 
 	if op.StatusCode != shared.Success {
-		return nil, fmt.Errorf(gettext.Gettext("got bad op status %s"), op.Status)
+		return nil, fmt.Errorf(i18n.G("got bad op status %s"), op.Status)
 	}
 
 	return op.Metadata, nil
@@ -2010,7 +1999,7 @@ func (c *Client) ImageFromContainer(cname string, public bool, aliases []string,
 		c.DeleteAlias(alias)
 		err = c.PostAlias(alias, alias, fingerprint)
 		if err != nil {
-			fmt.Printf(gettext.Gettext("Error adding alias %s")+"\n", alias)
+			fmt.Printf(i18n.G("Error adding alias %s")+"\n", alias)
 		}
 	}
 

@@ -34,7 +34,7 @@ type Profile struct {
 // Profiles will contain a list of all Profiles.
 type Profiles []Profile
 
-const DB_CURRENT_VERSION int = 17
+const DB_CURRENT_VERSION int = 18
 
 // CURRENT_SCHEMA contains the current SQLite SQL Schema.
 const CURRENT_SCHEMA string = `
@@ -180,12 +180,7 @@ func createDb(db *sql.DB) (err error) {
 		}
 	}
 
-	err = dbProfileCreateDefault(db)
-	if err != nil {
-		return err
-	}
-
-	return dbProfileCreateMigratable(db)
+	return dbProfileCreateDefault(db)
 }
 
 func dbGetSchema(db *sql.DB) (v int) {

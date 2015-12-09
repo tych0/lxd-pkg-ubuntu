@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chai2010/gettext-go/gettext"
 	"github.com/olekukonko/tablewriter"
 
 	"github.com/lxc/lxd"
+	"github.com/lxc/lxd/i18n"
 	"github.com/lxc/lxd/shared"
 )
 
@@ -42,7 +42,7 @@ func (c *listCmd) showByDefault() bool {
 }
 
 func (c *listCmd) usage() string {
-	return gettext.Gettext(
+	return i18n.G(
 		`Lists the available resources.
 
 lxc list [resource] [filters]
@@ -135,13 +135,13 @@ func listContainers(cinfos []shared.ContainerInfo, filters []string, listsnaps b
 				}
 
 				if ip.Protocol == "IPV6" {
-					ipv6s = append(ipv6s, ip.Address)
+					ipv6s = append(ipv6s, fmt.Sprintf("%s (%s)", ip.Address, ip.Interface))
 				} else {
-					ipv4s = append(ipv4s, ip.Address)
+					ipv4s = append(ipv4s, fmt.Sprintf("%s (%s)", ip.Address, ip.Interface))
 				}
 			}
-			ipv4 := strings.Join(ipv4s, ", ")
-			ipv6 := strings.Join(ipv6s, ", ")
+			ipv4 := strings.Join(ipv4s, "\n")
+			ipv6 := strings.Join(ipv6s, "\n")
 			d = append(d, ipv4)
 			d = append(d, ipv6)
 		} else {
@@ -149,9 +149,9 @@ func listContainers(cinfos []shared.ContainerInfo, filters []string, listsnaps b
 			d = append(d, "")
 		}
 		if cstate.Ephemeral {
-			d = append(d, gettext.Gettext("YES"))
+			d = append(d, i18n.G("YES"))
 		} else {
-			d = append(d, gettext.Gettext("NO"))
+			d = append(d, i18n.G("NO"))
 		}
 		// List snapshots
 		csnaps := cinfo.Snaps
@@ -161,13 +161,15 @@ func listContainers(cinfos []shared.ContainerInfo, filters []string, listsnaps b
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
+	table.SetAutoWrapText(false)
+	table.SetRowLine(true)
 	table.SetHeader([]string{
-		gettext.Gettext("NAME"),
-		gettext.Gettext("STATE"),
-		gettext.Gettext("IPV4"),
-		gettext.Gettext("IPV6"),
-		gettext.Gettext("EPHEMERAL"),
-		gettext.Gettext("SNAPSHOTS")})
+		i18n.G("NAME"),
+		i18n.G("STATE"),
+		i18n.G("IPV4"),
+		i18n.G("IPV6"),
+		i18n.G("EPHEMERAL"),
+		i18n.G("SNAPSHOTS")})
 	sort.Sort(ByName(data))
 	table.AppendBulk(data)
 	table.Render()
@@ -177,7 +179,7 @@ func listContainers(cinfos []shared.ContainerInfo, filters []string, listsnaps b
 		first_snapshot := true
 		for _, snap := range csnaps {
 			if first_snapshot {
-				fmt.Println(gettext.Gettext("Snapshots:"))
+				fmt.Println(i18n.G("Snapshots:"))
 			}
 			fmt.Printf("  %s\n", snap)
 			first_snapshot = false

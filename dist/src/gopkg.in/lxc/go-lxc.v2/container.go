@@ -1459,6 +1459,8 @@ func (c *Container) Checkpoint(opts CheckpointOptions) error {
 	}
 
 	cdirectory := C.CString(opts.Directory)
+	defer C.free(unsafe.Pointer(cdirectory))
+
 	cstop := C.bool(opts.Stop)
 	cverbose := C.bool(opts.Verbose)
 
@@ -1475,6 +1477,8 @@ func (c *Container) Restore(opts RestoreOptions) error {
 	}
 
 	cdirectory := C.CString(opts.Directory)
+	defer C.free(unsafe.Pointer(cdirectory))
+
 	cverbose := C.bool(opts.Verbose)
 
 	if !C.bool(C.go_lxc_restore(c.container, cdirectory, cverbose)) {
@@ -1517,6 +1521,27 @@ func (c *Container) DetachInterface(source string) error {
 	defer C.free(unsafe.Pointer(csource))
 
 	if !bool(C.go_lxc_detach_interface(c.container, csource, nil)) {
+		return ErrDetachInterfaceFailed
+	}
+	return nil
+}
+
+// DetachInterfaceRename detaches specifed netdev from the container and renames it.
+func (c *Container) DetachInterfaceRename(source, target string) error {
+	if err := c.makeSure(isRunning | isPrivileged | isGreaterEqualThanLXC11); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	csource := C.CString(source)
+	defer C.free(unsafe.Pointer(csource))
+
+	ctarget := C.CString(target)
+	defer C.free(unsafe.Pointer(ctarget))
+
+	if !bool(C.go_lxc_detach_interface(c.container, csource, ctarget)) {
 		return ErrDetachInterfaceFailed
 	}
 	return nil

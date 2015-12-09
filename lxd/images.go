@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v2"
@@ -23,6 +24,15 @@ import (
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
+
+/* We only want a single publish running at any one time.
+   The CPU and I/O load of publish is such that running multiple ones in
+   parallel takes longer than running them serially.
+
+   Additionaly, publishing the same container or container snapshot
+   twice would lead to storage problem, not to mention a conflict at the
+   end for whichever finishes last. */
+var imagePublishLock sync.Mutex
 
 func detectCompression(fname string) ([]string, string, error) {
 	f, err := os.Open(fname)
@@ -112,7 +122,7 @@ func untarImage(imagefname string, destpath string) error {
 }
 
 func compressFile(path string, compress string) (string, error) {
-	cmd := exec.Command(compress, path, "-c")
+	cmd := exec.Command(compress, path, "-c", "-n")
 
 	outfile, err := os.Create(path + ".compressed")
 	if err != nil {
@@ -187,17 +197,7 @@ func imgPostContInfo(d *Daemon, r *http.Request, req imagePostReq,
 		info.Public = false
 	}
 
-	snap := ""
-	if ctype == "snapshot" {
-		fields := strings.SplitN(name, "/", 2)
-		if len(fields) != 2 {
-			return info, fmt.Errorf("Not a snapshot")
-		}
-		name = fields[0]
-		snap = fields[1]
-	}
-
-	c, err := containerLXDLoad(d, name)
+	c, err := containerLoadByName(d, name)
 	if err != nil {
 		return info, err
 	}
@@ -208,9 +208,9 @@ func imgPostContInfo(d *Daemon, r *http.Request, req imagePostReq,
 		return info, err
 	}
 
-	if err := c.ExportToTar(snap, tarfile); err != nil {
+	if err := c.Export(tarfile); err != nil {
 		tarfile.Close()
-		return info, fmt.Errorf("imgPostContInfo: exportToTar failed: %s", err)
+		return info, fmt.Errorf("imgPostContInfo: export failed: %s", err)
 	}
 	tarfile.Close()
 
@@ -748,10 +748,13 @@ func imagesPost(d *Daemon, r *http.Request) Response {
 			}
 		} else {
 			/* Processing image creation from container */
+			imagePublishLock.Lock()
 			info, err = imgPostContInfo(d, r, req, builddir)
 			if err != nil {
+				imagePublishLock.Unlock()
 				return err
 			}
+			imagePublishLock.Unlock()
 		}
 
 		metadata, err := imageBuildFromInfo(d, info)
