@@ -1,0 +1,47 @@
+From 8d6e5caa1144ceda8f96d660dc706401acb6009f Mon Sep 17 00:00:00 2001
+From: Tycho Andersen <tycho.andersen@canonical.com>
+Date: Wed, 9 Dec 2015 08:43:16 -0700
+Subject: generate a better error message for legacy image import
+
+lxc used to work, but now it doesn't. let's tell people what they should do
+instead.
+
+Closes #1384
+
+Signed-off-by: Tycho Andersen <tycho.andersen@canonical.com>
+---
+ scripts/lxd-images | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/scripts/lxd-images b/scripts/lxd-images
+index 0f01d82..ef0719d 100755
+--- a/scripts/lxd-images
++++ b/scripts/lxd-images
+@@ -602,6 +602,15 @@ if __name__ == "__main__":
+ 
+         setup_alias(args.alias, fingerprint)
+ 
++    def import_lxc(parser, args):
++        msg(_("""Importing LXC images is no longer supported via lxd-images.
++Please use:
++    lxc remote add images images.linuxcontainers.org
++    lxc image list
++    lxc launch images:ubuntu/trusty/amd64
++to import and launch images"""))
++        sys.exit(2)
++
+     def sync(parser, args):
+         # Look for images that have been marked for syncing
+         for image in lxd.images_list(recursive=True):
+@@ -733,6 +742,11 @@ if __name__ == "__main__":
+                                       help=_("Keep this image up to date"))
+     parser_import_ubuntu.set_defaults(func=import_ubuntu)
+ 
++    # # legacy LXC
++    parser_import_lxc = parser_import_subparsers.add_parser(
++        "lxc", help=_("Error message for legacy LXC images"))
++    parser_import_lxc.set_defaults(func=import_lxc)
++
+     # Image sync
+     parser_import = parser_subparsers.add_parser(
+         "sync", help=_("Sync images"))

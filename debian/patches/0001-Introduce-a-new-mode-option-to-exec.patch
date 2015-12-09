@@ -1,0 +1,115 @@
+From f57888bb20bb25dcc283905de1a70b4a29a5b42d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@ubuntu.com>
+Date: Wed, 9 Dec 2015 02:00:02 -0500
+Subject: Introduce a new --mode option to exec
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This allows overriding the setup mode, most useful to force
+non-interactive mode when one wants to get PIPEs allocated for stdin,
+stdout and stderr without having to close stdin.
+
+Launchpad bug: https://bugs.launchpad.net/ubuntu/+source/lxd/+bug/1522755
+Reported-by: Martin Pitt <martin.pitt@ubuntu.com>
+Signed-off-by: Stéphane Graber <stgraber@ubuntu.com>
+---
+ lxc/exec.go | 16 ++++++++++++++--
+ po/lxd.pot  | 12 ++++++++----
+ 2 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/lxc/exec.go b/lxc/exec.go
+index 2e848b0..beafcab 100644
+--- a/lxc/exec.go
++++ b/lxc/exec.go
+@@ -27,9 +27,11 @@ func (c *execCmd) usage() string {
+ 	return i18n.G(
+ 		`Execute the specified command in a container.
+ 
+-lxc exec [remote:]container [--env EDITOR=/usr/bin/vim]... <command>`)
++lxc exec [remote:]container [--mode=auto|interactive|non-interactive] [--env EDITOR=/usr/bin/vim]... <command>`)
+ }
+ 
++var modeFlag string
++
+ type envFlag []string
+ 
+ func (f *envFlag) String() string {
+@@ -49,6 +51,7 @@ var envArgs envFlag
+ 
+ func (c *execCmd) flags() {
+ 	gnuflag.Var(&envArgs, "env", i18n.G("An environment variable of the form HOME=/home/foo"))
++	gnuflag.StringVar(&modeFlag, "mode", "auto", i18n.G("Override the terminal mode (auto, interactive or non-interactive)"))
+ }
+ 
+ func sendTermSize(control *websocket.Conn) error {
+@@ -109,8 +112,17 @@ func (c *execCmd) run(config *lxd.Config, args []string) error {
+ 	}
+ 
+ 	cfd := int(syscall.Stdin)
++
++	var interactive bool
++	if modeFlag == "interactive" {
++		interactive = true
++	} else if modeFlag == "non-interactive" {
++		interactive = false
++	} else {
++		interactive = terminal.IsTerminal(cfd)
++	}
++
+ 	var oldttystate *terminal.State
+-	interactive := terminal.IsTerminal(cfd)
+ 	if interactive {
+ 		oldttystate, err = terminal.MakeRaw(cfd)
+ 		if err != nil {
+diff --git a/po/lxd.pot b/po/lxd.pot
+index 13e8e34..b76e7db 100644
+--- a/po/lxd.pot
++++ b/po/lxd.pot
+@@ -7,7 +7,7 @@
+ msgid   ""
+ msgstr  "Project-Id-Version: lxd\n"
+         "Report-Msgid-Bugs-To: lxc-devel@lists.linuxcontainers.org\n"
+-        "POT-Creation-Date: 2015-12-08 19:00-0500\n"
++        "POT-Creation-Date: 2015-12-09 02:00-0500\n"
+         "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+         "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+         "Language-Team: LANGUAGE <LL@li.org>\n"
+@@ -103,7 +103,7 @@ msgstr  ""
+ msgid   "Aliases:"
+ msgstr  ""
+ 
+-#: lxc/exec.go:51
++#: lxc/exec.go:53
+ msgid   "An environment variable of the form HOME=/home/foo"
+ msgstr  ""
+ 
+@@ -263,7 +263,7 @@ msgstr  ""
+ #: lxc/exec.go:27
+ msgid   "Execute the specified command in a container.\n"
+         "\n"
+-        "lxc exec [remote:]container [--env EDITOR=/usr/bin/vim]... <command>"
++        "lxc exec [remote:]container [--mode=auto|interactive|non-interactive] [--env EDITOR=/usr/bin/vim]... <command>"
+ msgstr  ""
+ 
+ #: lxc/image.go:235
+@@ -609,6 +609,10 @@ msgstr  ""
+ msgid   "Output is in %s"
+ msgstr  ""
+ 
++#: lxc/exec.go:54
++msgid   "Override the terminal mode (auto, interactive or non-interactive)"
++msgstr  ""
++
+ #: lxc/image.go:467 lxc/remote.go:243
+ msgid   "PUBLIC"
+ msgstr  ""
+@@ -993,7 +997,7 @@ msgstr  ""
+ msgid   "unknown transport type: %s"
+ msgstr  ""
+ 
+-#: lxc/exec.go:146
++#: lxc/exec.go:158
+ msgid   "unreachable return reached"
+ msgstr  ""
+ 
