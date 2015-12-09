@@ -11,4 +11,4 @@ respawn
 
 exec /usr/bin/lxd --group lxd --logfile=/var/log/lxd/lxd.log
 
-post-start exec /usr/bin/lxd waitready
+post-start exec /usr/bin/lxd waitready --timeout=600
