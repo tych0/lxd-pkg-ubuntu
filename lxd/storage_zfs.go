@@ -5,10 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/lxc/lxd/shared"
 
-	"github.com/satori/go.uuid"
+	"github.com/pborman/uuid"
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
@@ -51,6 +54,8 @@ func (s *storageZfs) Init(config map[string]interface{}) (storage, error) {
 	err = s.zfsCheckPool(s.zfsPool)
 	if err != nil {
 		if shared.PathExists(shared.VarPath("zfs.img")) {
+			_, _ = exec.Command("modprobe", "zfs").CombinedOutput()
+
 			output, err := exec.Command("zpool", "import",
 				"-d", shared.VarPath(), s.zfsPool).CombinedOutput()
 			if err != nil {
@@ -85,7 +90,7 @@ func (s *storageZfs) ContainerStop(container container) error {
 
 // Things we do have to care about
 func (s *storageZfs) ContainerCreate(container container) error {
-	cPath := container.Path("")
+	cPath := container.Path()
 	fs := fmt.Sprintf("containers/%s", container.Name())
 
 	err := s.zfsCreate(fs)
@@ -114,7 +119,7 @@ func (s *storageZfs) ContainerCreate(container container) error {
 }
 
 func (s *storageZfs) ContainerCreateFromImage(container container, fingerprint string) error {
-	cPath := container.Path("")
+	cPath := container.Path()
 	imagePath := shared.VarPath("images", fingerprint)
 	subvol := fmt.Sprintf("%s.zfs", imagePath)
 	fs := fmt.Sprintf("containers/%s", container.Name())
@@ -127,7 +132,7 @@ func (s *storageZfs) ContainerCreateFromImage(container container, fingerprint s
 		}
 	}
 
-	err := s.zfsClone(fsImage, "readonly", fs)
+	err := s.zfsClone(fsImage, "readonly", fs, true)
 	if err != nil {
 		return err
 	}
@@ -202,7 +207,7 @@ func (s *storageZfs) ContainerDelete(container container) error {
 			return err
 		}
 
-		err = s.zfsRename(fs, fmt.Sprintf("deleted/containers/%s", uuid.NewV4().String()))
+		err = s.zfsRename(fs, fmt.Sprintf("deleted/containers/%s", uuid.NewRandom().String()))
 		if err != nil {
 			return err
 		}
@@ -221,6 +226,8 @@ func (s *storageZfs) ContainerDelete(container container) error {
 			return err
 		}
 	}
+
+	s.zfsDestroy(fmt.Sprintf("snapshots/%s", container.Name()))
 
 	return nil
 }
@@ -241,7 +248,7 @@ func (s *storageZfs) ContainerCopy(container container, sourceContainer containe
 
 	if sourceSnap == "" {
 		if s.zfsExists(fmt.Sprintf("containers/%s", sourceName)) {
-			sourceSnap = fmt.Sprintf("copy-%s", uuid.NewV4().String())
+			sourceSnap = fmt.Sprintf("copy-%s", uuid.NewRandom().String())
 			sourceFs = fmt.Sprintf("containers/%s", sourceName)
 			err := s.zfsSnapshotCreate(fmt.Sprintf("containers/%s", sourceName), sourceSnap)
 			if err != nil {
@@ -256,7 +263,7 @@ func (s *storageZfs) ContainerCopy(container container, sourceContainer containe
 	}
 
 	if sourceFs != "" {
-		err := s.zfsClone(sourceFs, sourceSnap, destFs)
+		err := s.zfsClone(sourceFs, sourceSnap, destFs, true)
 		if err != nil {
 			return err
 		}
@@ -266,13 +273,13 @@ func (s *storageZfs) ContainerCopy(container container, sourceContainer containe
 			return err
 		}
 
-		output, err := storageRsyncCopy(sourceContainer.Path(""), container.Path(""))
+		output, err := storageRsyncCopy(sourceContainer.Path(), container.Path())
 		if err != nil {
 			return fmt.Errorf("rsync failed: %s", string(output))
 		}
 	}
 
-	cPath := container.Path("")
+	cPath := container.Path()
 	err := os.Symlink(cPath+".zfs", cPath)
 	if err != nil {
 		return err
@@ -314,6 +321,13 @@ func (s *storageZfs) ContainerRename(container container, newName string) error 
 	err = os.Remove(shared.VarPath(fmt.Sprintf("containers/%s", oldName)))
 	if err != nil {
 		return err
+	}
+
+	if shared.PathExists(shared.VarPath(fmt.Sprintf("snapshots/%s", oldName))) {
+		err = os.Rename(shared.VarPath(fmt.Sprintf("snapshots/%s", oldName)), shared.VarPath(fmt.Sprintf("snapshots/%s", newName)))
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -369,7 +383,7 @@ func (s *storageZfs) ContainerSnapshotDelete(snapshotContainer container) error 
 			return err
 		}
 	} else {
-		err = s.zfsSnapshotRename(fmt.Sprintf("containers/%s", cName), snapName, fmt.Sprintf("copy-%s", uuid.NewV4().String()))
+		err = s.zfsSnapshotRename(fmt.Sprintf("containers/%s", cName), snapName, fmt.Sprintf("copy-%s", uuid.NewRandom().String()))
 		if err != nil {
 			return err
 		}
@@ -433,6 +447,46 @@ func (s *storageZfs) ContainerSnapshotRename(snapshotContainer container, newNam
 	}
 
 	return nil
+}
+
+func (s *storageZfs) ContainerSnapshotStart(container container) error {
+	fields := strings.SplitN(container.Name(), shared.SnapshotDelimiter, 2)
+	if len(fields) < 2 {
+		return fmt.Errorf("Invalid snapshot name: %s", container.Name())
+	}
+	cName := fields[0]
+	sName := fields[1]
+	sourceFs := fmt.Sprintf("containers/%s", cName)
+	sourceSnap := fmt.Sprintf("snapshot-%s", sName)
+	destFs := fmt.Sprintf("snapshots/%s/%s", cName, sName)
+
+	err := s.zfsClone(sourceFs, sourceSnap, destFs, false)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *storageZfs) ContainerSnapshotStop(container container) error {
+	fields := strings.SplitN(container.Name(), shared.SnapshotDelimiter, 2)
+	if len(fields) < 2 {
+		return fmt.Errorf("Invalid snapshot name: %s", container.Name())
+	}
+	cName := fields[0]
+	sName := fields[1]
+	destFs := fmt.Sprintf("snapshots/%s/%s", cName, sName)
+
+	err := s.zfsDestroy(destFs)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *storageZfs) ContainerSnapshotCreateEmpty(snapshotContainer container) error {
+	return fmt.Errorf("can't transfer snapshots to zfs from non-zfs backend")
 }
 
 func (s *storageZfs) ImageCreate(fingerprint string) error {
@@ -525,12 +579,19 @@ func (s *storageZfs) zfsCheckPool(pool string) error {
 	return nil
 }
 
-func (s *storageZfs) zfsClone(source string, name string, dest string) error {
+func (s *storageZfs) zfsClone(source string, name string, dest string, dotZfs bool) error {
+	var mountpoint string
+
+	mountpoint = shared.VarPath(dest)
+	if dotZfs {
+		mountpoint += ".zfs"
+	}
+
 	output, err := exec.Command(
 		"zfs",
 		"clone",
 		"-p",
-		"-o", fmt.Sprintf("mountpoint=%s.zfs", shared.VarPath(dest)),
+		"-o", fmt.Sprintf("mountpoint=%s", mountpoint),
 		fmt.Sprintf("%s/%s@%s", s.zfsPool, source, name),
 		fmt.Sprintf("%s/%s", s.zfsPool, dest)).CombinedOutput()
 	if err != nil {
@@ -554,11 +615,16 @@ func (s *storageZfs) zfsClone(source string, name string, dest string) error {
 		}
 
 		destSubvol := dest + strings.TrimPrefix(sub, source)
+		mountpoint = shared.VarPath(destSubvol)
+		if dotZfs {
+			mountpoint += ".zfs"
+		}
+
 		output, err := exec.Command(
 			"zfs",
 			"clone",
 			"-p",
-			"-o", fmt.Sprintf("mountpoint=%s.zfs", shared.VarPath(destSubvol)),
+			"-o", fmt.Sprintf("mountpoint=%s", mountpoint),
 			fmt.Sprintf("%s/%s@%s", s.zfsPool, sub, name),
 			fmt.Sprintf("%s/%s", s.zfsPool, destSubvol)).CombinedOutput()
 		if err != nil {
@@ -591,7 +657,7 @@ func (s *storageZfs) zfsDestroy(path string) error {
 		return err
 	}
 
-	if mountpoint != "none" {
+	if mountpoint != "none" && shared.IsMountPoint(mountpoint) {
 		output, err := exec.Command("umount", "-l", mountpoint).CombinedOutput()
 		if err != nil {
 			s.log.Error("umount failed", log.Ctx{"output": string(output)})
@@ -599,11 +665,21 @@ func (s *storageZfs) zfsDestroy(path string) error {
 		}
 	}
 
-	output, err := exec.Command(
-		"zfs",
-		"destroy",
-		"-r",
-		fmt.Sprintf("%s/%s", s.zfsPool, path)).CombinedOutput()
+	// Due to open fds or kernel refs, this may fail for a bit, give it 5s
+	var output []byte
+	for i := 0; i < 10; i++ {
+		output, err = exec.Command(
+			"zfs",
+			"destroy",
+			"-r",
+			fmt.Sprintf("%s/%s", s.zfsPool, path)).CombinedOutput()
+
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	if err != nil {
 		s.log.Error("zfs destroy failed", log.Ctx{"output": string(output)})
 		return err
@@ -939,4 +1015,16 @@ func storageZFSSetPoolNameConfig(d *Daemon, poolname string) error {
 	}
 
 	return nil
+}
+
+func (s *storageZfs) MigrationType() MigrationFSType {
+	return MigrationFSType_RSYNC
+}
+
+func (s *storageZfs) MigrationSource(container container) ([]MigrationStorageSource, error) {
+	return rsyncMigrationSource(container)
+}
+
+func (s *storageZfs) MigrationSink(container container, snapshots []container, conn *websocket.Conn) error {
+	return rsyncMigrationSink(container, snapshots, conn)
 }

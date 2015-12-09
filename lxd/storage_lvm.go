@@ -9,12 +9,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
-
-var sysSyncfsTrapNum uintptr = 306
 
 var storageLvmDefaultThinLVSize = "10GiB"
 var storageLvmDefaultThinPoolName = "LXDPool"
@@ -30,7 +30,7 @@ func storageLVMCheckVolumeGroup(vgName string) error {
 }
 
 func storageLVMThinpoolExists(vgName string, poolName string) (bool, error) {
-	output, err := exec.Command("vgs", "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", vgName, poolName)).CombinedOutput()
+	output, err := exec.Command("vgs", "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", vgName, poolName)).Output()
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			waitStatus := exitError.Sys().(syscall.WaitStatus)
@@ -217,14 +217,13 @@ func (s *storageLvm) Init(config map[string]interface{}) (storage, error) {
 }
 
 func (s *storageLvm) ContainerCreate(container container) error {
-
 	containerName := containerNameToLVName(container.Name())
 	lvpath, err := s.createThinLV(containerName)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(container.Path(""), 0755); err != nil {
+	if err := os.MkdirAll(container.Path(), 0755); err != nil {
 		return err
 	}
 
@@ -256,7 +255,7 @@ func (s *storageLvm) ContainerCreateFromImage(
 		return err
 	}
 
-	destPath := container.Path("")
+	destPath := container.Path()
 	if err := os.MkdirAll(destPath, 0755); err != nil {
 		return fmt.Errorf("Error creating container directory: %v", err)
 	}
@@ -299,18 +298,17 @@ func (s *storageLvm) ContainerCreateFromImage(
 }
 
 func (s *storageLvm) ContainerDelete(container container) error {
-
 	lvName := containerNameToLVName(container.Name())
 	if err := s.removeLV(lvName); err != nil {
 		return err
 	}
 
-	lvLinkPath := fmt.Sprintf("%s.lv", container.Path(""))
+	lvLinkPath := fmt.Sprintf("%s.lv", container.Path())
 	if err := os.Remove(lvLinkPath); err != nil {
 		return err
 	}
 
-	cPath := container.Path("")
+	cPath := container.Path()
 	if err := os.RemoveAll(cPath); err != nil {
 		s.log.Error("ContainerDelete: failed to remove path", log.Ctx{"cPath": cPath, "err": err})
 		return fmt.Errorf("Cleaning up %s: %s", cPath, err)
@@ -340,8 +338,8 @@ func (s *storageLvm) ContainerCopy(container container, sourceContainer containe
 		}
 
 		output, err := storageRsyncCopy(
-			sourceContainer.Path(""),
-			container.Path(""))
+			sourceContainer.Path(),
+			container.Path())
 		if err != nil {
 			s.log.Error("ContainerCopy: rsync failed", log.Ctx{"output": string(output)})
 			s.ContainerDelete(container)
@@ -359,11 +357,11 @@ func (s *storageLvm) ContainerStart(container container) error {
 	lvName := containerNameToLVName(container.Name())
 	lvpath := fmt.Sprintf("/dev/%s/%s", s.vgName, lvName)
 	output, err := exec.Command(
-		"mount", "-o", "discard", lvpath, container.Path("")).CombinedOutput()
+		"mount", "-o", "discard", lvpath, container.Path()).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
 			"Error mounting snapshot LV path='%s': %v\noutput:'%s'",
-			container.Path(""),
+			container.Path(),
 			err,
 			string(output))
 	}
@@ -372,11 +370,11 @@ func (s *storageLvm) ContainerStart(container container) error {
 }
 
 func (s *storageLvm) ContainerStop(container container) error {
-	output, err := exec.Command("umount", container.Path("")).CombinedOutput()
+	output, err := exec.Command("umount", container.Path()).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
 			"failed to unmount container path '%s'.\nError: %v\nOutput: %s",
-			container.Path(""),
+			container.Path(),
 			err,
 			string(output))
 	}
@@ -401,8 +399,8 @@ func (s *storageLvm) ContainerRename(
 	}
 
 	// Rename the Symlink
-	oldSymPath := fmt.Sprintf("%s.lv", container.Path(""))
-	newSymPath := fmt.Sprintf("%s.lv", container.Path(newName))
+	oldSymPath := fmt.Sprintf("%s.lv", container.Path())
+	newSymPath := fmt.Sprintf("%s.lv", containerPath(newName, false))
 	if err := os.Rename(oldSymPath, newSymPath); err != nil {
 		s.log.Error("Rename of the symlink failed",
 			log.Ctx{"oldPath": oldSymPath,
@@ -410,6 +408,22 @@ func (s *storageLvm) ContainerRename(
 				"err":     err})
 
 		return err
+	}
+
+	if !container.IsSnapshot() {
+		snaps, err := container.Snapshots()
+		if err != nil {
+			return err
+		}
+
+		for _, snap := range snaps {
+			baseSnapName := filepath.Base(snap.Name())
+			newSnapshotName := newName + shared.SnapshotDelimiter + baseSnapName
+			err := s.ContainerRename(snap, newSnapshotName)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -453,12 +467,12 @@ func (s *storageLvm) createSnapshotContainer(
 		return fmt.Errorf("Error creating snapshot LV: %v", err)
 	}
 
-	destPath := snapshotContainer.Path("")
+	destPath := snapshotContainer.Path()
 	if err := os.MkdirAll(destPath, 0755); err != nil {
 		return fmt.Errorf("Error creating container directory: %v", err)
 	}
 
-	dest := fmt.Sprintf("%s.lv", snapshotContainer.Path(""))
+	dest := fmt.Sprintf("%s.lv", snapshotContainer.Path())
 	err = os.Symlink(lvpath, dest)
 	if err != nil {
 		return err
@@ -475,7 +489,7 @@ func (s *storageLvm) ContainerSnapshotDelete(
 		return fmt.Errorf("Error deleting snapshot %s: %s", snapshotContainer.Name(), err)
 	}
 
-	oldPathParent := filepath.Dir(snapshotContainer.Path(""))
+	oldPathParent := filepath.Dir(snapshotContainer.Path())
 	if ok, _ := shared.PathIsEmpty(oldPathParent); ok {
 		os.Remove(oldPathParent)
 	}
@@ -493,9 +507,9 @@ func (s *storageLvm) ContainerSnapshotRename(
 		return fmt.Errorf("Failed to rename a container LV, oldName='%s', newName='%s', err='%s'", oldName, newName, err)
 	}
 
-	oldPath := snapshotContainer.Path("")
+	oldPath := snapshotContainer.Path()
 	oldSymPath := fmt.Sprintf("%s.lv", oldPath)
-	newPath := snapshotContainer.Path(newName)
+	newPath := containerPath(newName, true)
 	newSymPath := fmt.Sprintf("%s.lv", newPath)
 
 	if err := os.Rename(oldSymPath, newSymPath); err != nil {
@@ -516,6 +530,57 @@ func (s *storageLvm) ContainerSnapshotRename(
 	}
 
 	return nil
+}
+
+func (s *storageLvm) ContainerSnapshotStart(container container) error {
+	srcName := containerNameToLVName(container.Name())
+	destName := containerNameToLVName(container.Name() + "/rw")
+
+	shared.Log.Debug(
+		"Creating snapshot",
+		log.Ctx{"srcName": srcName, "destName": destName})
+
+	lvpath, err := s.createSnapshotLV(destName, srcName, false)
+	if err != nil {
+		return fmt.Errorf("Error creating snapshot LV: %v", err)
+	}
+
+	destPath := container.Path()
+	if !shared.PathExists(destPath) {
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return fmt.Errorf("Error creating container directory: %v", err)
+		}
+	}
+
+	output, err := exec.Command(
+		"mount", "-o", "discard", lvpath, container.Path()).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"Error mounting snapshot LV path='%s': %v\noutput:'%s'",
+			container.Path(),
+			err,
+			string(output))
+	}
+
+	return nil
+}
+
+func (s *storageLvm) ContainerSnapshotStop(container container) error {
+	err := s.ContainerStop(container)
+	if err != nil {
+		return err
+	}
+
+	lvName := containerNameToLVName(container.Name() + "/rw")
+	if err := s.removeLV(lvName); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *storageLvm) ContainerSnapshotCreateEmpty(snapshotContainer container) error {
+	return s.ContainerCreate(snapshotContainer)
 }
 
 func (s *storageLvm) ImageCreate(fingerprint string) error {
@@ -613,7 +678,6 @@ func (s *storageLvm) createDefaultThinPool() (string, error) {
 }
 
 func (s *storageLvm) createThinLV(lvname string) (string, error) {
-
 	poolname, err := s.d.ConfigValueGet("storage.lvm_thinpool_name")
 	if err != nil {
 		return "", fmt.Errorf("Error checking server config, err=%v", err)
@@ -694,10 +758,22 @@ func (s *storageLvm) createSnapshotLV(lvname string, origlvname string, readonly
 }
 
 func (s *storageLvm) isLVMContainer(container container) bool {
-	return shared.PathExists(fmt.Sprintf("%s.lv", container.Path("")))
+	return shared.PathExists(fmt.Sprintf("%s.lv", container.Path()))
 }
 
 func (s *storageLvm) renameLV(oldName string, newName string) (string, error) {
 	output, err := exec.Command("lvrename", s.vgName, oldName, newName).CombinedOutput()
 	return string(output), err
+}
+
+func (s *storageLvm) MigrationType() MigrationFSType {
+	return MigrationFSType_RSYNC
+}
+
+func (s *storageLvm) MigrationSource(container container) ([]MigrationStorageSource, error) {
+	return rsyncMigrationSource(container)
+}
+
+func (s *storageLvm) MigrationSink(container container, snapshots []container, conn *websocket.Conn) error {
+	return rsyncMigrationSink(container, snapshots, conn)
 }

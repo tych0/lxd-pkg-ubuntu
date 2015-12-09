@@ -9,13 +9,14 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/chai2010/gettext-go/gettext"
 	"github.com/olekukonko/tablewriter"
 	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 
 	"github.com/lxc/lxd"
+	"github.com/lxc/lxd/i18n"
 	"github.com/lxc/lxd/shared"
+	"github.com/lxc/lxd/shared/gnuflag"
 )
 
 type configCmd struct {
@@ -26,7 +27,13 @@ func (c *configCmd) showByDefault() bool {
 	return true
 }
 
-var configEditHelp string = gettext.Gettext(
+var expanded bool
+
+func (c *configCmd) flags() {
+	gnuflag.BoolVar(&expanded, "expanded", false, i18n.G("Whether to show the expanded configuration"))
+}
+
+var configEditHelp string = i18n.G(
 	`### This is a yaml representation of the configuration.
 ### Any line starting with a '# will be ignored.
 ###
@@ -46,7 +53,7 @@ var configEditHelp string = gettext.Gettext(
 ### Note that the name is shown but cannot be changed`)
 
 func (c *configCmd) usage() string {
-	return gettext.Gettext(
+	return i18n.G(
 		`Manage configuration.
 
 lxc config device add <[remote:]container> <name> <type> [key=value]...     Add a device to a container.
@@ -59,7 +66,7 @@ lxc config set [remote:]<container> key value                               Set 
 lxc config unset [remote:]<container> key                                   Unset container configuration key.
 lxc config set key value                                                    Set server configuration key.
 lxc config unset key                                                        Unset server configuration key.
-lxc config show [remote:]<container>                                        Show container configuration.
+lxc config show [--expanded] [remote:]<container>                           Show container configuration.
 lxc config edit [remote:]<container>                                        Edit container configuration in external editor.
     Edit configuration, either by launching external editor or reading STDIN.
     Example: lxc config edit <container> # launch editor
@@ -82,8 +89,6 @@ To listen on IPv4 and IPv6 port 8443 (you can omit the 8443 its the default):
 To set the server trust password:
     lxc config set core.trust_password blah`)
 }
-
-func (c *configCmd) flags() {}
 
 func doSet(config *lxd.Config, args []string) error {
 	if len(args) != 4 {
@@ -123,18 +128,30 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 			return errArgs
 		}
 
-		// 2 args means we're unsetting a server key
+		// Deal with local server
 		if len(args) == 2 {
-			key := args[1]
 			c, err := lxd.NewClient(config, config.DefaultRemote)
 			if err != nil {
 				return err
 			}
-			_, err = c.SetServerConfig(key, "")
+
+			_, err = c.SetServerConfig(args[1], "")
 			return err
 		}
 
-		// 3 args is a container config key
+		// Deal with remote server
+		remote, container := config.ParseRemoteAndContainer(args[1])
+		if container == "" {
+			c, err := lxd.NewClient(config, remote)
+			if err != nil {
+				return err
+			}
+
+			_, err = c.SetServerConfig(args[2], "")
+			return err
+		}
+
+		// Deal with container
 		args = append(args, "")
 		return doSet(config, args)
 
@@ -143,18 +160,30 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 			return errArgs
 		}
 
-		// 3 args means we're setting a server key
+		// Deal with local server
 		if len(args) == 3 {
-			key := args[1]
 			c, err := lxd.NewClient(config, config.DefaultRemote)
 			if err != nil {
 				return err
 			}
-			_, err = c.SetServerConfig(key, args[2])
+
+			_, err = c.SetServerConfig(args[1], args[2])
 			return err
 		}
 
-		// 4 args is a container config key
+		// Deal with remote server
+		remote, container := config.ParseRemoteAndContainer(args[1])
+		if container == "" {
+			c, err := lxd.NewClient(config, remote)
+			if err != nil {
+				return err
+			}
+
+			_, err = c.SetServerConfig(args[2], args[3])
+			return err
+		}
+
+		// Deal with container
 		return doSet(config, args)
 
 	case "trust":
@@ -199,10 +228,10 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 
 			table := tablewriter.NewWriter(os.Stdout)
 			table.SetHeader([]string{
-				gettext.Gettext("FINGERPRINT"),
-				gettext.Gettext("COMMON NAME"),
-				gettext.Gettext("ISSUE DATE"),
-				gettext.Gettext("EXPIRY DATE")})
+				i18n.G("FINGERPRINT"),
+				i18n.G("COMMON NAME"),
+				i18n.G("ISSUE DATE"),
+				i18n.G("EXPIRY DATE")})
 
 			for _, v := range data {
 				table.Append(v)
@@ -213,7 +242,7 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		case "add":
 			var remote string
 			if len(args) < 3 {
-				return fmt.Errorf(gettext.Gettext("No certificate provided to add"))
+				return fmt.Errorf(i18n.G("No certificate provided to add"))
 			} else if len(args) == 4 {
 				remote = config.ParseRemote(args[2])
 			} else {
@@ -236,7 +265,7 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 		case "remove":
 			var remote string
 			if len(args) < 3 {
-				return fmt.Errorf(gettext.Gettext("No fingerprint specified."))
+				return fmt.Errorf(i18n.G("No fingerprint specified."))
 			} else if len(args) == 4 {
 				remote = config.ParseRemote(args[2])
 			} else {
@@ -282,6 +311,9 @@ func (c *configCmd) run(config *lxd.Config, args []string) error {
 			}
 
 			brief := config.BriefState()
+			if expanded {
+				brief = config.BriefStateExpanded()
+			}
 			data, err = yaml.Marshal(&brief)
 		}
 
@@ -414,8 +446,8 @@ func doConfigEdit(client *lxd.Client, cont string) error {
 
 		// Respawn the editor
 		if err != nil {
-			fmt.Fprintf(os.Stderr, gettext.Gettext("Config parsing error: %s")+"\n", err)
-			fmt.Println(gettext.Gettext("Press enter to start the editor again"))
+			fmt.Fprintf(os.Stderr, i18n.G("Config parsing error: %s")+"\n", err)
+			fmt.Println(i18n.G("Press enter to start the editor again"))
 
 			_, err := os.Stdin.Read(make([]byte, 1))
 			if err != nil {
@@ -462,7 +494,7 @@ func deviceAdd(config *lxd.Config, which string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf(gettext.Gettext("Device %s added to %s")+"\n", devname, name)
+	fmt.Printf(i18n.G("Device %s added to %s")+"\n", devname, name)
 	if which == "profile" {
 		return nil
 	}
@@ -490,7 +522,7 @@ func deviceRm(config *lxd.Config, which string, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf(gettext.Gettext("Device %s removed from %s")+"\n", devname, name)
+	fmt.Printf(i18n.G("Device %s removed from %s")+"\n", devname, name)
 	if which == "profile" {
 		return nil
 	}

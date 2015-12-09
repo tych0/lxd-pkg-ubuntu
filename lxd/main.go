@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -137,6 +138,8 @@ func run() error {
 		fmt.Printf("        Push a file to a running container\n")
 		fmt.Printf("    forkstart\n")
 		fmt.Printf("        Start a container\n")
+		fmt.Printf("    callhook\n")
+		fmt.Printf("        Call a container hook\n")
 	}
 
 	// Parse the arguments
@@ -189,6 +192,8 @@ func run() error {
 			return MigrateContainer(os.Args[1:])
 		case "forkstart":
 			return startContainer(os.Args[1:])
+		case "callhook":
+			return callHook(os.Args[1:])
 		case "init":
 			return setupLXD()
 		case "shutdown":
@@ -205,6 +210,58 @@ func run() error {
 	}
 
 	return daemon()
+}
+
+func callHook(args []string) error {
+	if len(args) < 4 {
+		return fmt.Errorf("Invalid arguments")
+	}
+
+	path := args[1]
+	id := args[2]
+	state := args[3]
+	target := ""
+
+	err := os.Setenv("LXD_DIR", path)
+	if err != nil {
+		return err
+	}
+
+	c, err := lxd.NewClient(&lxd.DefaultConfig, "local")
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/internal/containers/%s/on%s", c.BaseURL, id, state)
+
+	if state == "stop" {
+		target = os.Getenv("LXC_TARGET")
+		if target == "" {
+			target = "unknown"
+		}
+		url = fmt.Sprintf("%s?target=%s", url, target)
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	raw, err := c.Http.Do(req)
+	if err != nil {
+		return err
+	}
+
+	_, err = lxd.HoistResponse(raw, lxd.Sync)
+	if err != nil {
+		return err
+	}
+
+	if target == "reboot" {
+		return fmt.Errorf("Reboot must be handled by LXD.")
+	}
+
+	return nil
 }
 
 func daemon() error {
@@ -267,6 +324,18 @@ func daemon() error {
 	}()
 
 	go func() {
+		<-d.shutdownChan
+
+		shared.Log.Info(
+			fmt.Sprintf("Asked to shutdown by API, shutting down containers."))
+
+		containersShutdown(d)
+
+		ret = d.Stop()
+		wg.Done()
+	}()
+
+	go func() {
 		ch := make(chan os.Signal)
 		signal.Notify(ch, syscall.SIGINT)
 		signal.Notify(ch, syscall.SIGQUIT)
@@ -296,17 +365,12 @@ func cleanShutdown() error {
 		return err
 	}
 
-	serverStatus, err := c.ServerStatus()
+	req, err := http.NewRequest("PUT", c.BaseURL+"/internal/shutdown", nil)
 	if err != nil {
 		return err
 	}
 
-	pid := serverStatus.Environment.ServerPid
-	if pid < 1 {
-		return fmt.Errorf("Invalid server PID: %d", pid)
-	}
-
-	err = syscall.Kill(pid, syscall.SIGPWR)
+	_, err = c.Http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -641,7 +705,8 @@ func setupLXD() error {
 		if shared.StringInSlice(storageMode, []string{"loop", "device"}) {
 			output, err := exec.Command(
 				"zpool",
-				"create", storagePool, storageDevice).CombinedOutput()
+				"create", storagePool, storageDevice,
+				"-m", "none").CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("Failed to create the ZFS pool: %s", output)
 			}

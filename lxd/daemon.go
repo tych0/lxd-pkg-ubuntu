@@ -34,7 +34,9 @@ import (
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
-var aaEnabled = true
+var aaAdmin = true
+var aaAvailable = true
+var aaConfined = false
 var runningInUserns = false
 
 const (
@@ -61,6 +63,8 @@ type Daemon struct {
 	mux           *mux.Router
 	tomb          tomb.Tomb
 	pruneChan     chan bool
+	shutdownChan  chan bool
+	execPath      string
 
 	Storage storage
 
@@ -348,15 +352,15 @@ func (d *Daemon) SetupStorageDriver() error {
 
 func setupSharedMounts() error {
 	path := shared.VarPath("shmounts")
-	if shared.IsOnSharedMount(path) {
-		// / may already be ms-shared, or shmounts may have
-		// been mounted by a previous lxd run
-		return nil
-	}
 	if !shared.PathExists(path) {
 		if err := os.Mkdir(path, 0755); err != nil {
 			return err
 		}
+	}
+	if shared.IsOnSharedMount(path) {
+		// / may already be ms-shared, or shmounts may have
+		// been mounted by a previous lxd run
+		return nil
 	}
 	if err := syscall.Mount(path, path, "none", syscall.MS_BIND, ""); err != nil {
 		return err
@@ -418,7 +422,7 @@ func (d *Daemon) ListenAddresses() ([]string, error) {
 			}
 		}
 	} else {
-		addresses = append(addresses, value)
+		addresses = append(addresses, fmt.Sprintf("%s:%s", localHost, localPort))
 	}
 
 	return addresses, nil
@@ -599,6 +603,15 @@ func haveMacAdmin() bool {
 }
 
 func (d *Daemon) Init() error {
+	d.shutdownChan = make(chan bool)
+
+	/* Set the executable path */
+	absPath, err := os.Readlink("/proc/self/exe")
+	if err != nil {
+		return err
+	}
+	d.execPath = absPath
+
 	/* Setup logging if that wasn't done before */
 	if shared.Log == nil {
 		shared.SetLogger("", "", true, true, nil)
@@ -615,31 +628,44 @@ func (d *Daemon) Init() error {
 	/* Detect user namespaces */
 	runningInUserns = shared.RunningInUserNS()
 
-	/* Detect apparmor support */
-	if aaEnabled && os.Getenv("LXD_SECURITY_APPARMOR") == "false" {
-		aaEnabled = false
-		shared.Log.Warn("Per-container AppArmor profiles have been manually disabled")
+	/* Detect AppArmor support */
+	if aaAvailable && os.Getenv("LXD_SECURITY_APPARMOR") == "false" {
+		aaAvailable = false
+		aaAdmin = false
+		shared.Log.Warn("AppArmor support has been manually disabled")
 	}
 
-	if aaEnabled && !shared.IsDir("/sys/kernel/security/apparmor") {
-		aaEnabled = false
-		shared.Log.Warn("Per-container AppArmor profiles disabled because of lack of kernel support")
+	if aaAvailable && !shared.IsDir("/sys/kernel/security/apparmor") {
+		aaAvailable = false
+		aaAdmin = false
+		shared.Log.Warn("AppArmor support has been disabled because of lack of kernel support")
 	}
 
-	if aaEnabled && !haveMacAdmin() {
-		shared.Log.Warn("Per-container AppArmor profiles are disabled because mac_admin capability is missing.")
-		aaEnabled = false
+	_, err = exec.LookPath("apparmor_parser")
+	if aaAvailable && err != nil {
+		aaAvailable = false
+		aaAdmin = false
+		shared.Log.Warn("AppArmor support has been disabled because 'apparmor_parser' couldn't be found")
 	}
 
-	_, err := exec.LookPath("apparmor_parser")
-	if aaEnabled && err != nil {
-		aaEnabled = false
-		shared.Log.Warn("Per-container AppArmor profiles disabled because 'apparmor_parser' couldn't be found")
+	/* Detect AppArmor admin support */
+	if aaAdmin && !haveMacAdmin() {
+		aaAdmin = false
+		shared.Log.Warn("Per-container AppArmor profiles are disabled because the mac_admin capability is missing.")
 	}
 
-	if aaEnabled && runningInUserns {
-		aaEnabled = false
-		shared.Log.Warn("Per-container AppArmor profiles disabled because LXD is running inside a user namespace")
+	if aaAdmin && runningInUserns {
+		aaAdmin = false
+		shared.Log.Warn("Per-container AppArmor profiles are disabled because LXD is running in an unprivileged container.")
+	}
+
+	/* Detect AppArmor confinment */
+	if !aaConfined {
+		profile := aaProfile()
+		if profile != "unconfined" && profile != "" {
+			aaConfined = true
+			shared.Log.Warn("Per-container AppArmor profiles are disabled because LXD is already protected by AppArmor.")
+		}
 	}
 
 	/* Get the list of supported architectures */
@@ -763,9 +789,11 @@ func (d *Daemon) Init() error {
 
 		/* Restart containers */
 		go func() {
-			containersWatch(d)
 			containersRestart(d)
 		}()
+
+		/* Start the scheduler */
+		go deviceTaskScheduler(d)
 
 		/* Setup the TLS authentication */
 		certf, keyf, err := readMyCert()
@@ -792,6 +820,10 @@ func (d *Daemon) Init() error {
 
 	for _, c := range api10 {
 		d.createCmd("1.0", c)
+	}
+
+	for _, c := range apiInternal {
+		d.createCmd("internal", c)
 	}
 
 	d.mux.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -934,7 +966,7 @@ func (d *Daemon) numRunningContainers() (int, error) {
 
 	count := 0
 	for _, r := range results {
-		container, err := containerLXDLoad(d, r)
+		container, err := containerLoadByName(d, r)
 		if err != nil {
 			continue
 		}

@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"syscall"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/lxc/lxd/shared"
 
@@ -104,6 +107,11 @@ func storageTypeToString(sType storageType) string {
 	return "dir"
 }
 
+type MigrationStorageSource interface {
+	Name() string
+	Send(conn *websocket.Conn) error
+}
+
 type storage interface {
 	Init(config map[string]interface{}) (storage, error)
 
@@ -128,9 +136,36 @@ type storage interface {
 		snapshotContainer container, sourceContainer container) error
 	ContainerSnapshotDelete(snapshotContainer container) error
 	ContainerSnapshotRename(snapshotContainer container, newName string) error
+	ContainerSnapshotStart(container container) error
+	ContainerSnapshotStop(container container) error
+
+	/* for use in migrating snapshots */
+	ContainerSnapshotCreateEmpty(snapshotContainer container) error
 
 	ImageCreate(fingerprint string) error
 	ImageDelete(fingerprint string) error
+
+	MigrationType() MigrationFSType
+
+	// Get the pieces required to migrate the source. This contains a list
+	// of the "object" (i.e. container or snapshot, depending on whether or
+	// not it is a snapshot name) to be migrated in order, and a channel
+	// for arguments of the specific migration command. We use a channel
+	// here so we don't have to invoke `zfs send` or `rsync` or whatever
+	// and keep its stdin/stdout open for each snapshot during the course
+	// of migration, we can do it lazily.
+	//
+	// N.B. that the order here important: e.g. in btrfs/zfs, snapshots
+	// which are parents of other snapshots should be sent first, to save
+	// as much transfer as possible. However, the base container is always
+	// sent as the first object, since that is the grandparent of every
+	// snapshot.
+	//
+	// We leave sending containers which are snapshots of other containers
+	// already present on the target instance as an exercise for the
+	// enterprising developer.
+	MigrationSource(container container) ([]MigrationStorageSource, error)
+	MigrationSink(container container, objects []container, conn *websocket.Conn) error
 }
 
 func newStorage(d *Daemon, sType storageType) (storage, error) {
@@ -178,6 +213,10 @@ func newStorageWithConfig(d *Daemon, sType storageType, config map[string]interf
 func storageForFilename(d *Daemon, filename string) (storage, error) {
 	config := make(map[string]interface{})
 	storageType := storageTypeDir
+
+	if d.IsMock {
+		return newStorageWithConfig(d, storageTypeMock, config)
+	}
 
 	filesystem, err := filesystemDetect(filename)
 	if err != nil {
@@ -234,7 +273,7 @@ func (ss *storageShared) GetStorageTypeVersion() string {
 }
 
 func (ss *storageShared) shiftRootfs(c container) error {
-	dpath := c.Path("")
+	dpath := c.Path()
 	rpath := c.RootfsPath()
 
 	shared.Log.Debug("Shifting root filesystem",
@@ -394,6 +433,15 @@ func (lw *storageLogWrapper) ContainerSnapshotCreate(
 
 	return lw.w.ContainerSnapshotCreate(snapshotContainer, sourceContainer)
 }
+
+func (lw *storageLogWrapper) ContainerSnapshotCreateEmpty(snapshotContainer container) error {
+	lw.log.Debug("ContainerSnapshotCreateEmpty",
+		log.Ctx{
+			"snapshotContainer": snapshotContainer.Name()})
+
+	return lw.w.ContainerSnapshotCreateEmpty(snapshotContainer)
+}
+
 func (lw *storageLogWrapper) ContainerSnapshotDelete(
 	snapshotContainer container) error {
 
@@ -412,6 +460,16 @@ func (lw *storageLogWrapper) ContainerSnapshotRename(
 	return lw.w.ContainerSnapshotRename(snapshotContainer, newName)
 }
 
+func (lw *storageLogWrapper) ContainerSnapshotStart(container container) error {
+	lw.log.Debug("ContainerStart", log.Ctx{"container": container.Name()})
+	return lw.w.ContainerSnapshotStart(container)
+}
+
+func (lw *storageLogWrapper) ContainerSnapshotStop(container container) error {
+	lw.log.Debug("ContainerStop", log.Ctx{"container": container.Name()})
+	return lw.w.ContainerSnapshotStop(container)
+}
+
 func (lw *storageLogWrapper) ImageCreate(fingerprint string) error {
 	lw.log.Debug(
 		"ImageCreate",
@@ -423,4 +481,91 @@ func (lw *storageLogWrapper) ImageDelete(fingerprint string) error {
 	lw.log.Debug("ImageDelete", log.Ctx{"fingerprint": fingerprint})
 	return lw.w.ImageDelete(fingerprint)
 
+}
+
+func (lw *storageLogWrapper) MigrationType() MigrationFSType {
+	return lw.w.MigrationType()
+}
+
+func (lw *storageLogWrapper) MigrationSource(container container) ([]MigrationStorageSource, error) {
+	lw.log.Debug("MigrationSource", log.Ctx{"container": container.Name()})
+	return lw.w.MigrationSource(container)
+}
+
+func (lw *storageLogWrapper) MigrationSink(container container, objects []container, conn *websocket.Conn) error {
+	objNames := []string{}
+	for _, obj := range objects {
+		objNames = append(objNames, obj.Name())
+	}
+
+	lw.log.Debug("MigrationSink", log.Ctx{
+		"container": container.Name(),
+		"objects":   objNames,
+	})
+
+	return lw.w.MigrationSink(container, objects, conn)
+}
+
+func ShiftIfNecessary(container container, srcIdmap *shared.IdmapSet) error {
+	dstIdmap := container.IdmapSet()
+	if dstIdmap == nil {
+		dstIdmap = new(shared.IdmapSet)
+	}
+
+	if !reflect.DeepEqual(srcIdmap, dstIdmap) {
+		if err := srcIdmap.UnshiftRootfs(container.Path()); err != nil {
+			return err
+		}
+
+		if err := dstIdmap.ShiftRootfs(container.Path()); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type rsyncStorageSource struct {
+	container container
+}
+
+func (s *rsyncStorageSource) Name() string {
+	return s.container.Name()
+}
+
+func (s *rsyncStorageSource) Send(conn *websocket.Conn) error {
+	path := s.container.Path()
+	return RsyncSend(shared.AddSlash(path), conn)
+}
+
+func rsyncMigrationSource(container container) ([]MigrationStorageSource, error) {
+	sources := []MigrationStorageSource{}
+
+	/* transfer the container, and then all the snapshots */
+	sources = append(sources, &rsyncStorageSource{container})
+	snaps, err := container.Snapshots()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, snap := range snaps {
+		sources = append(sources, &rsyncStorageSource{snap})
+	}
+
+	return sources, nil
+}
+
+func rsyncMigrationSink(container container, snapshots []container, conn *websocket.Conn) error {
+	/* the first object is the actual container */
+	if err := RsyncRecv(shared.AddSlash(container.Path()), conn); err != nil {
+		return err
+	}
+
+	for _, snap := range snapshots {
+		if err := RsyncRecv(shared.AddSlash(snap.Path()), conn); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

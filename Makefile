@@ -33,6 +33,8 @@ protobuf:
 
 .PHONY: check
 check: default
+	go get -v -x github.com/remyoudompheng/go-misc/deadcode
+	go get -v -x golang.org/x/tools/cmd/vet
 	go test -v ./...
 	cd test && ./main.sh
 
@@ -69,8 +71,8 @@ update-po:
 	done
 
 update-pot:
-	go get -v -x launchpad.net/~snappy-dev/snappy/snappy/i18n/xgettext-go/
-	xgettext-go -o po/$(DOMAIN).pot --add-comments-tag=TRANSLATORS: --sort-output --package-name=$(DOMAIN) --msgid-bugs-address=lxc-devel@lists.linuxcontainers.org --keyword=gettext.Gettext --keyword-plural=gettext.NGettext *.go shared/*.go lxc/*.go lxd/*.go
+	go get -v -x github.com/ubuntu-core/snappy/i18n/xgettext-go/
+	xgettext-go -o po/$(DOMAIN).pot --add-comments-tag=TRANSLATORS: --sort-output --package-name=$(DOMAIN) --msgid-bugs-address=lxc-devel@lists.linuxcontainers.org --keyword=i18n.G --keyword-plural=i18n.NG *.go shared/*.go lxc/*.go lxd/*.go
 
 
 build-mo: $(MOFILES)
