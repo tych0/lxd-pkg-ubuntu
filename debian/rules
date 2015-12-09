@@ -10,6 +10,7 @@ VERSION=$(shell grep "var Version" $(CURDIR)/shared/flex.go | sed -r -e 's/.*"([
 # temporary build path (see http://golang.org/doc/code.html#GOPATH)
 export DH_GOPKG := github.com/lxc/lxd
 export GOPATH := $(CURDIR)/obj-$(DEB_BUILD_GNU_TYPE)
+export USE_EMBEDDED := false
 
 %:
 	dh $@ --with systemd --buildsystem=golang --with=golang
@@ -19,9 +20,16 @@ override_dh_auto_build:
 	# Get a clean GOPATH
 	mv ${GOPATH}/src/github.com/lxc/lxd ${GOPATH}/lxd.tmp
 	rm -Rf ${GOPATH}/src
+
+ifeq ($(USE_EMBEDDED), true)
+	cp -R dist/src ${GOPATH}
+	rm ${GOPATH}/src/github.com/lxc/lxd
+endif
+
 	mkdir -p ${GOPATH}/src/github.com/lxc/
 	mv ${GOPATH}/lxd.tmp ${GOPATH}/src/github.com/lxc/lxd
 
+ifeq ($(USE_EMBEDDED), false)
 	# Packaged dependencies
 	## gosexy/gettext-go
 #	mkdir -p ${GOPATH}/src/github.com/gosexy/
@@ -121,6 +129,7 @@ override_dh_auto_build:
 	## syndtr/gocapability
 	mkdir -p ${GOPATH}/src/github.com/syndtr/
 	ln -s $(realpath dist/src/github.com/syndtr/gocapability) ${GOPATH}/src/github.com/syndtr/
+endif
 
 	go install -v github.com/lxc/lxd/lxc
 	go install -v github.com/lxc/lxd/lxd
