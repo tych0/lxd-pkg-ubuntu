@@ -72,16 +72,16 @@ ifeq ($(USE_EMBEDDED), false)
 	ln -s /usr/share/gocode/src/github.com/mattn/go-sqlite3 ${GOPATH}/src/github.com/mattn/
 
 	## pborman/uuid
-#	mkdir -p ${GOPATH}/src/github.com/pborman/
-#	ln -s /usr/share/gocode/src/github.com/pborman/uuid ${GOPATH}/src/github.com/pborman/
+	mkdir -p ${GOPATH}/src/github.com/pborman/
+	ln -s /usr/share/gocode/src/github.com/pborman/uuid ${GOPATH}/src/github.com/pborman/
 
 	## coreos/go-systemd
-#	mkdir -p ${GOPATH}/src/github.com/coreos/
-#	ln -s /usr/share/gocode/src/github.com/coreos/go-systemd ${GOPATH}/src/github.com/coreos/
+	mkdir -p ${GOPATH}/src/github.com/coreos/
+	ln -s /usr/share/gocode/src/github.com/coreos/go-systemd ${GOPATH}/src/github.com/coreos/
 
 	## syndtr/gocapability
-#	mkdir -p ${GOPATH}/src/github.com/syndtr/
-#	ln -s /usr/share/gocode/src/github.com/syndtr/gocapability ${GOPATH}/src/github.com/syndtr/
+	mkdir -p ${GOPATH}/src/github.com/syndtr/
+	ln -s /usr/share/gocode/src/github.com/syndtr/gocapability ${GOPATH}/src/github.com/syndtr/
 
 	## tomb.v2
 	mkdir -p ${GOPATH}/src/gopkg.in/
@@ -117,18 +117,6 @@ ifeq ($(USE_EMBEDDED), false)
 	## gorilla/websocket
 	mkdir -p ${GOPATH}/src/github.com/gorilla/
 	ln -s $(realpath dist/src/github.com/gorilla/websocket) ${GOPATH}/src/github.com/gorilla/
-
-	## pborman/uuid
-	mkdir -p ${GOPATH}/src/github.com/pborman/
-	ln -s $(realpath dist/src/github.com/pborman/uuid) ${GOPATH}/src/github.com/pborman/
-
-	## coreos/go-systemd
-	mkdir -p ${GOPATH}/src/github.com/coreos/
-	ln -s $(realpath dist/src/github.com/stgraber/lxd-go-systemd) ${GOPATH}/src/github.com/coreos/go-systemd
-
-	## syndtr/gocapability
-	mkdir -p ${GOPATH}/src/github.com/syndtr/
-	ln -s $(realpath dist/src/github.com/syndtr/gocapability) ${GOPATH}/src/github.com/syndtr/
 endif
 
 	go install -v github.com/lxc/lxd/lxc
