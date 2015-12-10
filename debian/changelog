@@ -1,3 +1,13 @@
+lxd (0.24-0ubuntu3) xenial; urgency=medium
+
+  * Use the packaged versions of:
+    - golang-github-coreos-go-systemd
+    - golang-github-pborman-uuid-dev
+    - golang-gocapability-dev
+  * Add a new golang-github-lxc-lxd-dev package.
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Thu, 10 Dec 2015 14:35:01 -0500
+
 lxd (0.24-0ubuntu2) xenial; urgency=medium
 
   * Cherry-pick the following upstream bugfixes: (LP: #1522755)
