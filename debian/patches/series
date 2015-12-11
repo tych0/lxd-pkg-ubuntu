@@ -6,3 +6,7 @@
 0006-Use-the-mountpoint-command-when-available.patch
 0007-tests-Fix-mount-issues.patch
 0008-Apparently-IsMountPoint-is-never-very-reliable-with-.patch
+0009-images-fix-expiry-logic.patch
+0010-Add-proper-s390x-support.patch
+0011-Allow-moving-arguments-in-aliases.patch
+0012-Live-apply-memory-limits.patch

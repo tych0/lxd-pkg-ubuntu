@@ -1,0 +1,77 @@
+From 49a12e27ea0d3ac3865a625fc9c83d81a888684f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@ubuntu.com>
+Date: Thu, 10 Dec 2015 12:18:20 -0500
+Subject: Add proper s390x support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Stéphane Graber <stgraber@ubuntu.com>
+---
+ scripts/lxd-images      | 3 ++-
+ shared/architectures.go | 4 ++++
+ specs/architectures.md  | 1 +
+ 3 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/lxd-images b/scripts/lxd-images
+index bd02a50..22098e1 100755
+--- a/scripts/lxd-images
++++ b/scripts/lxd-images
+@@ -73,7 +73,8 @@ def local_architecture():
+                        'armv7l': "armhf",
+                        'aarch64': "arm64",
+                        'ppc': "powerpc",
+-                       'ppc64le': "ppc64el"}
++                       'ppc64le': "ppc64el",
++                       's390x': "s390x"}
+ 
+         kernel_arch = os.uname().machine
+ 
+diff --git a/shared/architectures.go b/shared/architectures.go
+index 283ad34..64dbc3f 100644
+--- a/shared/architectures.go
++++ b/shared/architectures.go
+@@ -13,6 +13,7 @@ const (
+ 	ARCH_32BIT_POWERPC_BIG_ENDIAN    = 5
+ 	ARCH_64BIT_POWERPC_BIG_ENDIAN    = 6
+ 	ARCH_64BIT_POWERPC_LITTLE_ENDIAN = 7
++	ARCH_64BIT_S390_BIG_ENDIAN       = 8
+ )
+ 
+ var architectureNames = map[int]string{
+@@ -23,6 +24,7 @@ var architectureNames = map[int]string{
+ 	ARCH_32BIT_POWERPC_BIG_ENDIAN:    "ppc",
+ 	ARCH_64BIT_POWERPC_BIG_ENDIAN:    "ppc64",
+ 	ARCH_64BIT_POWERPC_LITTLE_ENDIAN: "ppc64le",
++	ARCH_64BIT_S390_BIG_ENDIAN:       "s390x",
+ }
+ 
+ var architecturePersonalities = map[int]string{
+@@ -33,6 +35,7 @@ var architecturePersonalities = map[int]string{
+ 	ARCH_32BIT_POWERPC_BIG_ENDIAN:    "linux32",
+ 	ARCH_64BIT_POWERPC_BIG_ENDIAN:    "linux64",
+ 	ARCH_64BIT_POWERPC_LITTLE_ENDIAN: "linux64",
++	ARCH_64BIT_S390_BIG_ENDIAN:       "linux64",
+ }
+ 
+ var architectureSupportedPersonalities = map[int][]int{
+@@ -43,6 +46,7 @@ var architectureSupportedPersonalities = map[int][]int{
+ 	ARCH_32BIT_POWERPC_BIG_ENDIAN:    []int{},
+ 	ARCH_64BIT_POWERPC_BIG_ENDIAN:    []int{ARCH_32BIT_POWERPC_BIG_ENDIAN},
+ 	ARCH_64BIT_POWERPC_LITTLE_ENDIAN: []int{},
++	ARCH_64BIT_S390_BIG_ENDIAN:       []int{},
+ }
+ 
+ func ArchitectureName(arch int) (string, error) {
+diff --git a/specs/architectures.md b/specs/architectures.md
+index 626dbe3..30af23c 100644
+--- a/specs/architectures.md
++++ b/specs/architectures.md
+@@ -29,6 +29,7 @@ ID    | Name          | Notes                           | Personalities
+ 5     | ppc           | 32bit PowerPC big-endian        |
+ 6     | ppc64         | 64bit PowerPC big-endian        | powerpc
+ 7     | ppc64le       | 64bit PowerPC little-endian     |
++8     | s390x         | 64bit ESA/390 big-endian        |
+ 
+ The architecture names above are typically aligned with the Linux kernel
+ architecture names.

@@ -1,0 +1,44 @@
+From 2d5ed4532ad0cb29ff3aa9e64a52372b5ddaf648 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@ubuntu.com>
+Date: Fri, 11 Dec 2015 17:08:11 -0500
+Subject: Live-apply memory limits
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Stéphane Graber <stgraber@ubuntu.com>
+---
+ lxd/container_lxc.go | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/lxd/container_lxc.go b/lxd/container_lxc.go
+index 518360e..050823c 100644
+--- a/lxd/container_lxc.go
++++ b/lxd/container_lxc.go
+@@ -1379,6 +1379,8 @@ func (c *containerLXC) Update(args containerArgs, userRequested bool) error {
+ 	if c.IsRunning() {
+ 		// Live update the container config
+ 		for _, key := range changedConfig {
++			value := c.expandedConfig[key]
++
+ 			if key == "raw.apparmor" {
+ 				// Update the AppArmor profile
+ 				err = AALoadProfile(c)
+@@ -1389,6 +1391,17 @@ func (c *containerLXC) Update(args containerArgs, userRequested bool) error {
+ 			} else if key == "limits.cpu" {
+ 				// Trigger a scheduler re-run
+ 				deviceTaskSchedulerTrigger("container", c.name, "changed")
++			} else if key == "limits.memory" {
++				// Apply new memory limit
++				if value == "" {
++					value = "-1"
++				}
++
++				err = c.CGroupSet("memory.limit_in_bytes", value)
++				if err != nil {
++					undoChanges()
++					return err
++				}
+ 			}
+ 		}
+ 
