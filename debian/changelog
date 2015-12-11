@@ -1,3 +1,13 @@
+lxd (0.24-0ubuntu4) xenial; urgency=medium
+
+  * Cherry-pick the following upstream commits:
+    - 0009-images-fix-expiry-logic.patch
+    - 0010-Add-proper-s390x-support.patch
+    - 0011-Allow-moving-arguments-in-aliases.patch
+    - 0012-Live-apply-memory-limits.patch
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 11 Dec 2015 18:32:15 -0500
+
 lxd (0.24-0ubuntu3) xenial; urgency=medium
 
   * Use the packaged versions of:
