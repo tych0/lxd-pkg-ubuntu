@@ -4,7 +4,7 @@ gen_third_cert() {
   [ -f "${LXD_CONF}/client3.crt" ] && return
   mv "${LXD_CONF}/client.crt" "${LXD_CONF}/client.crt.bak"
   mv "${LXD_CONF}/client.key" "${LXD_CONF}/client.key.bak"
-  lxc list > /dev/null 2>&1
+  lxc_remote list > /dev/null 2>&1
   mv "${LXD_CONF}/client.crt" "${LXD_CONF}/client3.crt"
   mv "${LXD_CONF}/client.key" "${LXD_CONF}/client3.key"
   mv "${LXD_CONF}/client.crt.bak" "${LXD_CONF}/client.crt"
@@ -186,9 +186,11 @@ test_basic_usage() {
   [ "${sum}" = "$(md5sum "${LXD_DIR}/out" | cut -d' ' -f1)" ]
   rm "${LXD_DIR}/out"
 
-  # This is why we can't have nice things.
-  content=$(cat "${LXD_DIR}/containers/foo/rootfs/tmp/foo")
-  [ "${content}" = "foo" ]
+  # FIXME: make this backend agnostic
+  if [ "${LXD_BACKEND}" = "dir" ]; then
+    content=$(cat "${LXD_DIR}/containers/foo/rootfs/tmp/foo")
+    [ "${content}" = "foo" ]
+  fi
 
   lxc launch testimage deleterunning
   my_curl -X DELETE "https://${LXD_ADDR}/1.0/containers/deleterunning" | grep "container is running"
@@ -210,7 +212,7 @@ test_basic_usage() {
   lxc profile create unconfined
   lxc profile set unconfined security.privileged true
   lxc init testimage foo2 -p unconfined
-  [ "$(stat -c "%a" "${LXD_DIR}/containers/foo2")" = "700" ]
+  [ "$(stat -L -c "%a" "${LXD_DIR}/containers/foo2")" = "700" ]
   lxc delete foo2
   lxc profile delete unconfined
 
@@ -222,8 +224,11 @@ test_basic_usage() {
 
   # shellcheck disable=SC2034
   for i in $(seq 10); do
-    NEW_INIT=$(lxc info foo | grep ^Init)
-    [ "$OLD_INIT" != "$NEW_INIT" ] && break
+    NEW_INIT=$(lxc info foo | grep ^Init || true)
+
+    if [ -n "${NEW_INIT}" ] && [ "${OLD_INIT}" != "${NEW_INIT}" ]; then
+      break
+    fi
 
     sleep 0.5
   done

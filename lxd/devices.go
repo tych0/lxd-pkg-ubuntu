@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
@@ -109,6 +110,11 @@ func deviceTaskBalance(d *Daemon) {
 			return x
 		}
 		return y
+	}
+
+	// Don't bother running when CGroup support isn't there
+	if !cgCpusetController {
+		return
 	}
 
 	// Count CPUs
@@ -440,4 +446,141 @@ func deviceMountDisk(srcPath string, dstPath string, readonly bool) error {
 	}
 
 	return nil
+}
+
+func deviceParseCPU(cpuAllowance string, cpuPriority string) (string, string, string, error) {
+	var err error
+
+	// Parse priority
+	cpuShares := 0
+	cpuPriorityInt := 10
+	if cpuPriority != "" {
+		cpuPriorityInt, err = strconv.Atoi(cpuPriority)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	cpuShares -= 10 - cpuPriorityInt
+
+	// Parse allowance
+	cpuCfsQuota := "-1"
+	cpuCfsPeriod := "100000"
+
+	if cpuAllowance != "" {
+		if strings.HasSuffix(cpuAllowance, "%") {
+			// Percentage based allocation
+			percent, err := strconv.Atoi(strings.TrimSuffix(cpuAllowance, "%"))
+			if err != nil {
+				return "", "", "", err
+			}
+
+			cpuShares += (10 * percent) + 24
+		} else {
+			// Time based allocation
+			fields := strings.SplitN(cpuAllowance, "/", 2)
+			if len(fields) != 2 {
+				return "", "", "", fmt.Errorf("Invalid allowance: %s", cpuAllowance)
+			}
+
+			quota, err := strconv.Atoi(strings.TrimSuffix(fields[0], "ms"))
+			if err != nil {
+				return "", "", "", err
+			}
+
+			period, err := strconv.Atoi(strings.TrimSuffix(fields[1], "ms"))
+			if err != nil {
+				return "", "", "", err
+			}
+
+			// Set limit in ms
+			cpuCfsQuota = fmt.Sprintf("%d", quota*1000)
+			cpuCfsPeriod = fmt.Sprintf("%d", period*1000)
+			cpuShares += 1024
+		}
+	} else {
+		// Default is 100%
+		cpuShares += 1024
+	}
+
+	// Deal with a potential negative score
+	if cpuShares < 0 {
+		cpuShares = 0
+	}
+
+	return fmt.Sprintf("%d", cpuShares), cpuCfsQuota, cpuCfsPeriod, nil
+}
+
+func deviceParseBytes(input string) (int64, error) {
+	if len(input) < 3 {
+		return -1, fmt.Errorf("Invalid value: %s", input)
+	}
+
+	// Extract the suffix
+	suffix := input[len(input)-2:]
+
+	// Extract the value
+	value := input[0 : len(input)-2]
+	valueInt, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return -1, fmt.Errorf("Invalid integer: %s", input)
+	}
+
+	if valueInt < 0 {
+		return -1, fmt.Errorf("Invalid value: %d", valueInt)
+	}
+
+	// Figure out the multiplicator
+	multiplicator := int64(0)
+	switch suffix {
+	case "kB":
+		multiplicator = 1024
+	case "MB":
+		multiplicator = 1024 * 1024
+	case "GB":
+		multiplicator = 1024 * 1024 * 1024
+	case "TB":
+		multiplicator = 1024 * 1024 * 1024 * 1024
+	case "PB":
+		multiplicator = 1024 * 1024 * 1024 * 1024 * 1024
+	case "EB":
+		multiplicator = 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+	default:
+		return -1, fmt.Errorf("Unsupported suffix: %s", suffix)
+	}
+
+	return valueInt * multiplicator, nil
+}
+
+func deviceTotalMemory() (int64, error) {
+	// Open /proc/meminfo
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+
+	// Read it line by line
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := scan.Text()
+
+		// We only care about MemTotal
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+
+		// Extract the before last (value) and last (unit) fields
+		fields := strings.Split(line, " ")
+		value := fields[len(fields)-2] + fields[len(fields)-1]
+
+		// Feed the result to deviceParseBytes to get an int value
+		valueBytes, err := deviceParseBytes(value)
+		if err != nil {
+			return -1, err
+		}
+
+		return valueBytes, nil
+	}
+
+	return -1, fmt.Errorf("Couldn't find MemTotal")
 }

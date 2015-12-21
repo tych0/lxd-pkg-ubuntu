@@ -3,37 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/lxc/lxd/shared"
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
-
-func validateConfig(config map[string]string, profile bool) error {
-	if config == nil {
-		return nil
-	}
-
-	for k, _ := range config {
-		if profile && strings.HasPrefix(k, "volatile.") {
-			return fmt.Errorf("Volatile keys can only be set on containers.")
-		}
-
-		if k == "raw.lxc" {
-			err := validateRawLxc(config["raw.lxc"])
-			if err != nil {
-				return err
-			}
-		}
-
-		if !ValidContainerConfigKey(k) {
-			return fmt.Errorf("Bad key: %s", k)
-		}
-	}
-
-	return nil
-}
 
 type containerType int
 
@@ -43,8 +17,29 @@ const (
 )
 
 func dbContainerRemove(db *sql.DB, name string) error {
-	_, err := dbExec(db, "DELETE FROM containers WHERE name=?", name)
-	return err
+	id, err := dbContainerId(db, name)
+	if err != nil {
+		return err
+	}
+
+	tx, err := dbBegin(db)
+	if err != nil {
+		return err
+	}
+
+	err = dbContainerConfigClear(tx, id)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	_, err = tx.Exec("DELETE FROM containers WHERE id=?", id)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return txCommit(tx)
 }
 
 func dbContainerName(db *sql.DB, id int) (string, error) {
@@ -122,6 +117,7 @@ func dbContainerCreate(db *sql.DB, args containerArgs) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	ephemInt := 0
 	if args.Ephemeral == true {
 		ephemInt = 1
@@ -187,11 +183,6 @@ func dbContainerConfigClear(tx *sql.Tx, id int) error {
 }
 
 func dbContainerConfigInsert(tx *sql.Tx, id int, config map[string]string) error {
-	err := validateConfig(config, false)
-	if err != nil {
-		return err
-	}
-
 	str := "INSERT INTO containers_config (container_id, key, value) values (?, ?, ?)"
 	stmt, err := tx.Prepare(str)
 	if err != nil {
@@ -310,10 +301,6 @@ func dbContainersList(db *sql.DB, cType containerType) ([]string, error) {
 }
 
 func dbContainerRename(db *sql.DB, oldName string, newName string) error {
-	if !strings.Contains(newName, shared.SnapshotDelimiter) && !shared.ValidHostname(newName) {
-		return fmt.Errorf("Invalid container name")
-	}
-
 	tx, err := dbBegin(db)
 	if err != nil {
 		return err
@@ -359,54 +346,4 @@ func dbContainerGetSnapshots(db *sql.DB, name string) ([]string, error) {
 	}
 
 	return result, nil
-}
-
-// ValidContainerConfigKey returns if the given config key is a known/valid key.
-func ValidContainerConfigKey(k string) bool {
-	switch k {
-	case "boot.autostart":
-		return true
-	case "boot.autostart.delay":
-		return true
-	case "boot.autostart.priority":
-		return true
-	case "limits.cpu":
-		return true
-	case "limits.memory":
-		return true
-	case "security.privileged":
-		return true
-	case "security.nesting":
-		return true
-	case "raw.apparmor":
-		return true
-	case "raw.lxc":
-		return true
-	case "volatile.base_image":
-		return true
-	case "volatile.last_state.idmap":
-		return true
-	case "volatile.last_state.power":
-		return true
-	}
-
-	if strings.HasPrefix(k, "volatile.") {
-		if strings.HasSuffix(k, ".hwaddr") {
-			return true
-		}
-
-		if strings.HasSuffix(k, ".name") {
-			return true
-		}
-	}
-
-	if strings.HasPrefix(k, "environment.") {
-		return true
-	}
-
-	if strings.HasPrefix(k, "user.") {
-		return true
-	}
-
-	return false
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/lxc/lxd/shared"
+	"github.com/lxc/lxd/shared/logging"
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
@@ -109,6 +110,7 @@ func storageTypeToString(sType storageType) string {
 
 type MigrationStorageSource interface {
 	Name() string
+	IsSnapshot() bool
 	Send(conn *websocket.Conn) error
 }
 
@@ -125,6 +127,7 @@ type storage interface {
 	// ContainerCreateFromImage creates a container from a image.
 	ContainerCreateFromImage(container container, imageFingerprint string) error
 
+	ContainerCanRestore(container container, sourceContainer container) error
 	ContainerDelete(container container) error
 	ContainerCopy(container container, sourceContainer container) error
 	ContainerStart(container container) error
@@ -250,11 +253,12 @@ type storageShared struct {
 	sTypeName    string
 	sTypeVersion string
 
-	log log.Logger
+	log shared.Logger
 }
 
 func (ss *storageShared) initShared() error {
-	ss.log = shared.Log.New(
+	ss.log = logging.AddContext(
+		shared.Log,
 		log.Ctx{"driver": fmt.Sprintf("storage/%s", ss.sTypeName)},
 	)
 	return nil
@@ -329,12 +333,13 @@ func (ss *storageShared) setUnprivUserAcl(c container, destPath string) error {
 
 type storageLogWrapper struct {
 	w   storage
-	log log.Logger
+	log shared.Logger
 }
 
 func (lw *storageLogWrapper) Init(config map[string]interface{}) (storage, error) {
 	_, err := lw.w.Init(config)
-	lw.log = shared.Log.New(
+	lw.log = logging.AddContext(
+		shared.Log,
 		log.Ctx{"driver": fmt.Sprintf("storage/%s", lw.w.GetStorageTypeName())},
 	)
 
@@ -373,6 +378,11 @@ func (lw *storageLogWrapper) ContainerCreateFromImage(
 			"name":             container.Name(),
 			"isPrivileged":     container.IsPrivileged()})
 	return lw.w.ContainerCreateFromImage(container, imageFingerprint)
+}
+
+func (lw *storageLogWrapper) ContainerCanRestore(container container, sourceContainer container) error {
+	lw.log.Debug("ContainerCanRestore", log.Ctx{"container": container.Name()})
+	return lw.w.ContainerCanRestore(container, sourceContainer)
 }
 
 func (lw *storageLogWrapper) ContainerDelete(container container) error {
@@ -531,6 +541,10 @@ type rsyncStorageSource struct {
 
 func (s *rsyncStorageSource) Name() string {
 	return s.container.Name()
+}
+
+func (s *rsyncStorageSource) IsSnapshot() bool {
+	return s.container.IsSnapshot()
 }
 
 func (s *rsyncStorageSource) Send(conn *websocket.Conn) error {
