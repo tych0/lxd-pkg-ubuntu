@@ -13,6 +13,7 @@ import (
 	"github.com/lxc/lxd/i18n"
 	"github.com/lxc/lxd/shared"
 	"github.com/lxc/lxd/shared/gnuflag"
+	"github.com/lxc/lxd/shared/logging"
 )
 
 func main() {
@@ -124,7 +125,10 @@ func run() error {
 	os.Args = os.Args[1:]
 	gnuflag.Parse(true)
 
-	shared.SetLogger("", "", *verbose, *debug, nil)
+	shared.Log, err = logging.GetLogger("", "", *verbose, *debug, nil)
+	if err != nil {
+		return err
+	}
 
 	certf := lxd.ConfigPath("client.crt")
 	keyf := lxd.ConfigPath("client.key")
@@ -192,15 +196,27 @@ var errArgs = fmt.Errorf(i18n.G("wrong number of subcommand arguments"))
 func execIfAliases(config *lxd.Config, origArgs []string) {
 	newArgs := []string{}
 	expandedAlias := false
-	for _, arg := range origArgs {
+	done := false
+	for i, arg := range origArgs {
 		changed := false
 		for k, v := range config.Aliases {
 			if k == arg {
 				expandedAlias = true
 				changed = true
-				newArgs = append(newArgs, strings.Split(v, " ")...)
+				for _, aliasArg := range strings.Split(v, " ") {
+					if aliasArg == "@ARGS@" && len(origArgs) > i {
+						done = true
+						newArgs = append(newArgs, origArgs[i+1:]...)
+					} else {
+						newArgs = append(newArgs, aliasArg)
+					}
+				}
 				break
 			}
+		}
+
+		if done {
+			break
 		}
 
 		if !changed {

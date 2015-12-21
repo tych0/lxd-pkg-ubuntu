@@ -30,13 +30,23 @@ import (
 
 	"github.com/lxc/lxd"
 	"github.com/lxc/lxd/shared"
+	"github.com/lxc/lxd/shared/logging"
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
 
+// AppArmor
 var aaAdmin = true
 var aaAvailable = true
 var aaConfined = false
+
+// CGroup
+var cgCpuController = false
+var cgCpusetController = false
+var cgMemoryController = false
+var cgSwapAccounting = false
+
+// UserNS
 var runningInUserns = false
 
 const (
@@ -352,23 +362,27 @@ func (d *Daemon) SetupStorageDriver() error {
 
 func setupSharedMounts() error {
 	path := shared.VarPath("shmounts")
-	if !shared.PathExists(path) {
-		if err := os.Mkdir(path, 0755); err != nil {
-			return err
-		}
+
+	isShared, err := shared.IsOnSharedMount(path)
+	if err != nil {
+		return err
 	}
-	if shared.IsOnSharedMount(path) {
+
+	if isShared {
 		// / may already be ms-shared, or shmounts may have
 		// been mounted by a previous lxd run
 		return nil
 	}
+
 	if err := syscall.Mount(path, path, "none", syscall.MS_BIND, ""); err != nil {
 		return err
 	}
+
 	var flags uintptr = syscall.MS_SHARED | syscall.MS_REC
 	if err := syscall.Mount(path, path, "none", flags, ""); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -555,7 +569,7 @@ func (d *Daemon) pruneExpiredImages() {
 	}
 
 	q := `
-SELECT fingerprint FROM images WHERE cached=1 AND last_use_date<=strftime('%s', 'now', '-` + expiry + ` day')`
+SELECT fingerprint FROM images WHERE cached=1 AND creation_date<=strftime('%s', date('now', '-` + expiry + ` day'))`
 	inargs := []interface{}{}
 	var fingerprint string
 	outfmt := []interface{}{fingerprint}
@@ -612,9 +626,18 @@ func (d *Daemon) Init() error {
 	}
 	d.execPath = absPath
 
+	/* Set the LVM environment */
+	err = os.Setenv("LVM_SUPPRESS_FD_WARNINGS", "1")
+	if err != nil {
+		return err
+	}
+
 	/* Setup logging if that wasn't done before */
 	if shared.Log == nil {
-		shared.SetLogger("", "", true, true, nil)
+		shared.Log, err = logging.GetLogger("", "", true, true, nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	if !d.IsMock {
@@ -668,6 +691,27 @@ func (d *Daemon) Init() error {
 		}
 	}
 
+	/* Detect CGroup support */
+	cgCpuController = shared.PathExists("/sys/fs/cgroup/cpu/")
+	if !cgCpuController {
+		shared.Log.Warn("Couldn't find the CGroup CPU controller, CPU time limits will be ignored.")
+	}
+
+	cgCpusetController = shared.PathExists("/sys/fs/cgroup/cpuset/")
+	if !cgCpusetController {
+		shared.Log.Warn("Couldn't find the CGroup CPUset controller, CPU pinning will be ignored.")
+	}
+
+	cgMemoryController = shared.PathExists("/sys/fs/cgroup/memory/")
+	if !cgMemoryController {
+		shared.Log.Warn("Couldn't find the CGroup memory controller, memory limits will be ignored.")
+	}
+
+	cgSwapAccounting = shared.PathExists("/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes")
+	if !cgSwapAccounting {
+		shared.Log.Warn("CGroup memory swap accounting is disabled, swap limits will be ignored.")
+	}
+
 	/* Get the list of supported architectures */
 	var architectures = []int{}
 
@@ -699,21 +743,29 @@ func (d *Daemon) Init() error {
 	}
 	d.architectures = architectures
 
-	/* Create required paths */
+	/* Set container path */
 	d.lxcpath = shared.VarPath("containers")
-	err = os.MkdirAll(d.lxcpath, 0755)
-	if err != nil {
-		return err
-	}
 
-	// Create default directories
-	if err := os.MkdirAll(shared.VarPath("images"), 0700); err != nil {
+	/* Make sure all our directories are available */
+	if err := os.MkdirAll(shared.VarPath("containers"), 0711); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(shared.VarPath("snapshots"), 0700); err != nil {
+	if err := os.MkdirAll(shared.VarPath("devices"), 0711); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(shared.VarPath("devlxd"), 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(shared.VarPath("images"), 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(shared.VarPath("security"), 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(shared.VarPath("shmounts"), 0711); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(shared.VarPath("snapshots"), 0700); err != nil {
 		return err
 	}
 
@@ -744,26 +796,16 @@ func (d *Daemon) Init() error {
 	/* Prune images */
 	d.pruneChan = make(chan bool)
 	go func() {
+		d.pruneExpiredImages()
 		for {
-			expiryStr, err := dbImageExpiryGet(d.db)
-			var expiry int
-			if err != nil {
-				expiry = 10
-			} else {
-				expiry, err = strconv.Atoi(expiryStr)
-				if err != nil {
-					expiry = 10
-				}
-				if expiry <= 0 {
-					expiry = 1
-				}
-			}
-			timer := time.NewTimer(time.Duration(expiry) * 24 * time.Hour)
+			timer := time.NewTimer(24 * time.Hour)
 			timeChan := timer.C
 			select {
 			case <-timeChan:
+				/* run once per day */
 				d.pruneExpiredImages()
 			case <-d.pruneChan:
+				/* run when image.remote_cache_expiry is changed */
 				d.pruneExpiredImages()
 				timer.Stop()
 			}
@@ -1001,7 +1043,6 @@ func (d *Daemon) Stop() error {
 		shared.Log.Debug("Unmounting shmounts")
 
 		syscall.Unmount(shared.VarPath("shmounts"), syscall.MNT_DETACH)
-		os.RemoveAll(shared.VarPath("shmounts"))
 	} else {
 		shared.Debugf("Not unmounting shmounts (containers are still running)")
 	}

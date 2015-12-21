@@ -40,7 +40,7 @@ func lxcSetConfigItem(c *lxc.Container, key string, value string) error {
 	return nil
 }
 
-func validateRawLxc(rawLxc string) error {
+func lxcValidConfig(rawLxc string) error {
 	for _, line := range strings.Split(rawLxc, "\n") {
 		// Ignore empty lines
 		if len(line) == 0 {
@@ -248,10 +248,6 @@ func (c *containerLXC) initLXC() error {
 
 	// Setup logging
 	logfile := c.LogFilePath()
-	err = os.MkdirAll(filepath.Dir(logfile), 0700)
-	if err != nil {
-		return err
-	}
 
 	err = cc.SetLogFile(logfile)
 	if err != nil {
@@ -266,7 +262,10 @@ func (c *containerLXC) initLXC() error {
 	// Setup architecture
 	personality, err := shared.ArchitecturePersonality(c.architecture)
 	if err != nil {
-		return err
+		personality, err = shared.ArchitecturePersonality(c.daemon.architectures[0])
+		if err != nil {
+			return err
+		}
 	}
 
 	err = lxcSetConfigItem(cc, "lxc.arch", personality)
@@ -365,12 +364,107 @@ func (c *containerLXC) initLXC() error {
 		}
 	}
 
-	// Setup limits
-	limitMemory, ok := c.expandedConfig["limits.memory"]
-	if ok && limitMemory != "" {
-		err = lxcSetConfigItem(cc, "lxc.cgroup.memory.limit_in_bytes", limitMemory)
+	// Memory limits
+	if cgMemoryController {
+		memory := c.expandedConfig["limits.memory"]
+		memoryEnforce := c.expandedConfig["limits.memory.enforce"]
+		memorySwap := c.expandedConfig["limits.memory.swap"]
+		memorySwapPriority := c.expandedConfig["limits.memory.swap.priority"]
+
+		// Configure the memory limits
+		if memory != "" {
+			var valueInt int64
+			if strings.HasSuffix(memory, "%") {
+				percent, err := strconv.ParseInt(strings.TrimSuffix(memory, "%"), 10, 64)
+				if err != nil {
+					return err
+				}
+
+				memoryTotal, err := deviceTotalMemory()
+				if err != nil {
+					return err
+				}
+
+				valueInt = int64((memoryTotal / 100) * percent)
+			} else {
+				valueInt, err = deviceParseBytes(memory)
+				if err != nil {
+					return err
+				}
+			}
+
+			if memoryEnforce == "soft" {
+				err = lxcSetConfigItem(cc, "lxc.cgroup.memory.soft_limit_in_bytes", fmt.Sprintf("%d", valueInt))
+				if err != nil {
+					return err
+				}
+			} else {
+				if memorySwap != "false" && cgSwapAccounting {
+					err = lxcSetConfigItem(cc, "lxc.cgroup.memory.limit_in_bytes", fmt.Sprintf("%d", valueInt))
+					if err != nil {
+						return err
+					}
+					err = lxcSetConfigItem(cc, "lxc.cgroup.memory.memsw.limit_in_bytes", fmt.Sprintf("%d", valueInt))
+					if err != nil {
+						return err
+					}
+				} else {
+					err = lxcSetConfigItem(cc, "lxc.cgroup.memory.limit_in_bytes", fmt.Sprintf("%d", valueInt))
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		// Configure the swappiness
+		if memorySwap == "false" {
+			err = lxcSetConfigItem(cc, "lxc.cgroup.memory.swappiness", "0")
+			if err != nil {
+				return err
+			}
+		} else if memorySwapPriority != "" {
+			priority, err := strconv.Atoi(memorySwapPriority)
+			if err != nil {
+				return err
+			}
+
+			err = lxcSetConfigItem(cc, "lxc.cgroup.memory.swappiness", fmt.Sprintf("%d", 60-10+priority))
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// CPU limits
+	cpuPriority := c.expandedConfig["limits.cpu.priority"]
+	cpuAllowance := c.expandedConfig["limits.cpu.allowance"]
+
+	if (cpuPriority != "" || cpuAllowance != "") && cgCpuController {
+		cpuShares, cpuCfsQuota, cpuCfsPeriod, err := deviceParseCPU(cpuAllowance, cpuPriority)
 		if err != nil {
 			return err
+		}
+
+		if cpuShares != "1024" {
+			err = lxcSetConfigItem(cc, "lxc.cgroup.cpu.shares", cpuShares)
+			if err != nil {
+				return err
+			}
+		}
+
+		if cpuCfsPeriod != "-1" {
+			err = lxcSetConfigItem(cc, "lxc.cgroup.cpu.cfs_period_us", cpuCfsPeriod)
+			if err != nil {
+				return err
+			}
+		}
+
+		if cpuCfsQuota != "-1" {
+			err = lxcSetConfigItem(cc, "lxc.cgroup.cpu.cfs_quota_us", cpuCfsQuota)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -505,10 +599,6 @@ func (c *containerLXC) initLXC() error {
 
 	// Apply raw.lxc
 	if lxcConfig, ok := c.expandedConfig["raw.lxc"]; ok {
-		if err := validateRawLxc(lxcConfig); err != nil {
-			return err
-		}
-
 		f, err := ioutil.TempFile("", "lxd_config_")
 		if err != nil {
 			return err
@@ -679,13 +769,20 @@ func (c *containerLXC) startCommon() (string, error) {
 		}
 	}
 
-	// Create shmounts path
-	source := shared.VarPath("shmounts", c.Name())
-	if !shared.PathExists(source) {
-		err = os.MkdirAll(source, 0750)
-		if err != nil {
-			return "", err
-		}
+	// Create any missing directory
+	err = os.MkdirAll(c.LogPath(), 0700)
+	if err != nil {
+		return "", err
+	}
+
+	err = os.MkdirAll(shared.VarPath("devices", c.Name()), 0700)
+	if err != nil {
+		return "", err
+	}
+
+	err = os.MkdirAll(shared.VarPath("shmounts", c.Name()), 0700)
+	if err != nil {
+		return "", err
 	}
 
 	// Cleanup any leftover volatile entries
@@ -697,28 +794,37 @@ func (c *containerLXC) startCommon() (string, error) {
 	}
 
 	for k, _ := range c.localConfig {
+		// We only care about volatile
 		if !strings.HasPrefix(k, "volatile.") {
 			continue
 		}
 
+		// Confirm it's a key of format volatile.<device>.<key>
 		fields := strings.SplitN(k, ".", 3)
 		if len(fields) != 3 {
 			continue
 		}
 
+		// The only device keys we care about are name and hwaddr
 		if !shared.StringInSlice(fields[2], []string{"name", "hwaddr"}) {
 			continue
 		}
 
+		// Check if the device still exists
 		if shared.StringInSlice(fields[1], netNames) {
-			continue
+			// Don't remove the volatile entry if the device doesn't have the matching field set
+			if c.expandedDevices[fields[1]][fields[2]] == "" {
+				continue
+			}
 		}
 
+		// Remove the volatile key from the DB
 		err := dbContainerConfigRemove(c.daemon.db, c.id, k)
 		if err != nil {
 			return "", err
 		}
 
+		// Remove the volatile key from the in-memory configs
 		delete(c.localConfig, k)
 		delete(c.expandedConfig, k)
 	}
@@ -1016,12 +1122,11 @@ func (c *containerLXC) Snapshots() ([]container, error) {
 }
 
 func (c *containerLXC) Restore(sourceContainer container) error {
-	/*
-	 * restore steps:
-	 * 1. stop container if already running
-	 * 2. copy snapshot rootfs to container
-	 * 3. overwrite existing config with snapshot config
-	 */
+	// Check if we can restore the container
+	err := c.storage.ContainerCanRestore(c, sourceContainer)
+	if err != nil {
+		return err
+	}
 
 	// Stop the container
 	wasRunning := false
@@ -1038,7 +1143,7 @@ func (c *containerLXC) Restore(sourceContainer container) error {
 	}
 
 	// Restore the rootfs
-	err := c.storage.ContainerRestore(c, sourceContainer)
+	err = c.storage.ContainerRestore(c, sourceContainer)
 	if err != nil {
 		shared.Log.Error("Restoring the filesystem failed",
 			log.Ctx{
@@ -1074,6 +1179,22 @@ func (c *containerLXC) Restore(sourceContainer container) error {
 	return nil
 }
 
+func (c *containerLXC) cleanup() {
+	// Unmount any leftovers
+	c.removeUnixDevices()
+	c.removeDiskDevices()
+
+	// Remove the security profiles
+	AADeleteProfile(c)
+	SeccompDeleteProfile(c)
+
+	// Remove the devices path
+	os.RemoveAll(c.DevicesPath())
+
+	// Remove the shmounts path
+	os.RemoveAll(shared.VarPath("shmounts", c.Name()))
+}
+
 func (c *containerLXC) Delete() error {
 	if c.IsSnapshot() {
 		// Remove the snapshot
@@ -1086,13 +1207,8 @@ func (c *containerLXC) Delete() error {
 			return err
 		}
 
-		// Unmount any leftovers
-		c.removeUnixDevices()
-		c.removeDiskDevices()
-
-		// Remove the security profiles
-		AADeleteProfile(c)
-		SeccompDeleteProfile(c)
+		// Clean things up
+		c.cleanup()
 
 		// Delete the container from disk
 		if err := c.storage.ContainerDelete(c); err != nil {
@@ -1120,6 +1236,16 @@ func (c *containerLXC) Rename(newName string) error {
 		return fmt.Errorf("renaming of running container not allowed")
 	}
 
+	// Clean things up
+	c.cleanup()
+
+	// Rename the logging path
+	os.RemoveAll(shared.LogPath(newName))
+	err := os.Rename(c.LogPath(), shared.LogPath(newName))
+	if err != nil {
+		return err
+	}
+
 	// Rename the storage entry
 	if c.IsSnapshot() {
 		if err := c.storage.ContainerSnapshotRename(c, newName); err != nil {
@@ -1136,13 +1262,13 @@ func (c *containerLXC) Rename(newName string) error {
 		return err
 	}
 
-	// Rename all the snapshots
-	results, err := dbContainerGetSnapshots(c.daemon.db, oldName)
-	if err != nil {
-		return err
-	}
-
 	if !c.IsSnapshot() {
+		// Rename all the snapshots
+		results, err := dbContainerGetSnapshots(c.daemon.db, oldName)
+		if err != nil {
+			return err
+		}
+
 		for _, sname := range results {
 			// Rename the snapshot
 			baseSnapName := filepath.Base(sname)
@@ -1215,13 +1341,13 @@ func (c *containerLXC) Update(args containerArgs, userRequested bool) error {
 	}
 
 	// Validate the new config
-	err := validateConfig(args.Config, false)
+	err := containerValidConfig(args.Config, false)
 	if err != nil {
 		return err
 	}
 
 	// Validate the new devices
-	err = validateDevices(args.Devices)
+	err = containerValidDevices(args.Devices)
 	if err != nil {
 		return err
 	}
@@ -1386,9 +1512,151 @@ func (c *containerLXC) Update(args containerArgs, userRequested bool) error {
 					undoChanges()
 					return err
 				}
+			} else if key == "limits.memory" || strings.HasPrefix(key, "limits.memory.") {
+				// Skip if no memory CGroup
+				if !cgMemoryController {
+					continue
+				}
+
+				// Set the new memory limit
+				memory := c.expandedConfig["limits.memory"]
+				memoryEnforce := c.expandedConfig["limits.memory.enforce"]
+				memorySwap := c.expandedConfig["limits.memory.swap"]
+
+				// Parse memory
+				if memory == "" {
+					memory = "-1"
+				} else if strings.HasSuffix(memory, "%") {
+					percent, err := strconv.ParseInt(strings.TrimSuffix(memory, "%"), 10, 64)
+					if err != nil {
+						return err
+					}
+
+					memoryTotal, err := deviceTotalMemory()
+					if err != nil {
+						return err
+					}
+
+					memory = fmt.Sprintf("%d", int64((memoryTotal/100)*percent))
+				} else {
+					valueInt, err := deviceParseBytes(memory)
+					if err != nil {
+						undoChanges()
+						return err
+					}
+					memory = fmt.Sprintf("%d", valueInt)
+				}
+
+				// Reset everything
+				if cgSwapAccounting {
+					err = c.CGroupSet("memory.memsw.limit_in_bytes", "-1")
+					if err != nil {
+						undoChanges()
+						return err
+					}
+				}
+
+				err = c.CGroupSet("memory.limit_in_bytes", "-1")
+				if err != nil {
+					undoChanges()
+					return err
+				}
+
+				err = c.CGroupSet("memory.soft_limit_in_bytes", "-1")
+				if err != nil {
+					undoChanges()
+					return err
+				}
+
+				// Set the new values
+				if memoryEnforce == "soft" {
+					// Set new limit
+					err = c.CGroupSet("memory.soft_limit_in_bytes", memory)
+					if err != nil {
+						undoChanges()
+						return err
+					}
+				} else {
+					if memorySwap != "false" && cgSwapAccounting {
+						err = c.CGroupSet("memory.limit_in_bytes", memory)
+						if err != nil {
+							undoChanges()
+							return err
+						}
+						err = c.CGroupSet("memory.memsw.limit_in_bytes", memory)
+						if err != nil {
+							undoChanges()
+							return err
+						}
+					} else {
+						err = c.CGroupSet("memory.limit_in_bytes", memory)
+						if err != nil {
+							undoChanges()
+							return err
+						}
+					}
+				}
+
+				// Configure the swappiness
+				if key == "limits.memory.swap" || key == "limits.memory.swap.priority" {
+					memorySwap := c.expandedConfig["limits.memory.swap"]
+					memorySwapPriority := c.expandedConfig["limits.memory.swap.priority"]
+					if memorySwap == "false" {
+						err = c.CGroupSet("memory.swappiness", "0")
+						if err != nil {
+							undoChanges()
+							return err
+						}
+					} else {
+						priority := 0
+						if memorySwapPriority != "" {
+							priority, err = strconv.Atoi(memorySwapPriority)
+							if err != nil {
+								undoChanges()
+								return err
+							}
+						}
+
+						err = c.CGroupSet("memory.swappiness", fmt.Sprintf("%d", 60-10+priority))
+						if err != nil {
+							undoChanges()
+							return err
+						}
+					}
+				}
 			} else if key == "limits.cpu" {
 				// Trigger a scheduler re-run
 				deviceTaskSchedulerTrigger("container", c.name, "changed")
+			} else if key == "limits.cpu.priority" || key == "limits.cpu.allowance" {
+				// Skip if no cpu CGroup
+				if !cgCpuController {
+					continue
+				}
+
+				// Apply new CPU limits
+				cpuShares, cpuCfsQuota, cpuCfsPeriod, err := deviceParseCPU(c.expandedConfig["limits.cpu.allowance"], c.expandedConfig["limits.cpu.priority"])
+				if err != nil {
+					undoChanges()
+					return err
+				}
+
+				err = c.CGroupSet("cpu.shares", cpuShares)
+				if err != nil {
+					undoChanges()
+					return err
+				}
+
+				err = c.CGroupSet("cpu.cfs_period_us", cpuCfsPeriod)
+				if err != nil {
+					undoChanges()
+					return err
+				}
+
+				err = c.CGroupSet("cpu.cfs_quota_us", cpuCfsQuota)
+				if err != nil {
+					undoChanges()
+					return err
+				}
 			}
 		}
 
@@ -1551,12 +1819,16 @@ func (c *containerLXC) Export(w io.Writer) error {
 			arch, _ = shared.ArchitectureName(c.architecture)
 		}
 
+		if arch == "" {
+			arch, err = shared.ArchitectureName(c.daemon.architectures[0])
+			if err != nil {
+				return err
+			}
+		}
+
 		// Fill in the metadata
 		meta := imageMetadata{}
-
-		if arch != "" {
-			meta.Architecture = arch
-		}
+		meta.Architecture = arch
 		meta.CreationDate = time.Now().UTC().Unix()
 
 		data, err := yaml.Marshal(&meta)
@@ -1704,10 +1976,19 @@ func (c *containerLXC) TemplateApply(trigger string) error {
 			return err
 		}
 
+		// Figure out the architecture
+		arch, err := shared.ArchitectureName(c.architecture)
+		if err != nil {
+			arch, err = shared.ArchitectureName(c.daemon.architectures[0])
+			if err != nil {
+				return err
+			}
+		}
+
 		// Generate the metadata
 		containerMeta := make(map[string]string)
 		containerMeta["name"] = c.name
-		containerMeta["architecture"], _ = shared.ArchitectureName(c.architecture)
+		containerMeta["architecture"] = arch
 
 		if c.ephemeral {
 			containerMeta["ephemeral"] = "true"
@@ -1971,9 +2252,21 @@ func (c *containerLXC) insertMount(source, target, fstype string, flags int) err
 	mntsrc := filepath.Join("/dev/.lxd-mounts", filepath.Base(tmpMount))
 	pidStr := fmt.Sprintf("%d", pid)
 
-	err = exec.Command(c.daemon.execPath, "forkmount", pidStr, mntsrc, target).Run()
+	out, err := exec.Command(c.daemon.execPath, "forkmount", pidStr, mntsrc, target).CombinedOutput()
+
+	if string(out) != "" {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			shared.Debugf("forkmount: %s", line)
+		}
+	}
+
 	if err != nil {
-		return fmt.Errorf("forkmount failed: %s", err)
+		return fmt.Errorf(
+			"Error calling 'lxd forkmount %s %s %s': err='%v'",
+			pidStr,
+			mntsrc,
+			target,
+			err)
 	}
 
 	return nil
@@ -1989,9 +2282,20 @@ func (c *containerLXC) removeMount(mount string) error {
 
 	// Remove the mount from the container
 	pidStr := fmt.Sprintf("%d", pid)
-	err := exec.Command(c.daemon.execPath, "forkumount", pidStr, mount).Run()
+	out, err := exec.Command(c.daemon.execPath, "forkumount", pidStr, mount).CombinedOutput()
+
+	if string(out) != "" {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			shared.Debugf("forkumount: %s", line)
+		}
+	}
+
 	if err != nil {
-		return fmt.Errorf("forkumount failed: %s", err)
+		return fmt.Errorf(
+			"Error calling 'lxd forkumount %s %s': err='%v'",
+			pidStr,
+			mount,
+			err)
 	}
 
 	return nil
@@ -2624,13 +2928,8 @@ func (c *containerLXC) removeDiskDevices() error {
 			continue
 		}
 
-		// Unmount the host side
-		if shared.IsMountPoint(filepath.Join(c.DevicesPath(), f.Name())) {
-			err = syscall.Unmount(filepath.Join(c.DevicesPath(), f.Name()), syscall.MNT_DETACH)
-			if err != nil {
-				return err
-			}
-		}
+		// Always try to unmount the host side
+		_ = syscall.Unmount(filepath.Join(c.DevicesPath(), f.Name()), syscall.MNT_DETACH)
 
 		// Remove the entry
 		err := os.Remove(filepath.Join(c.DevicesPath(), f.Name()))
@@ -2779,7 +3078,7 @@ func (c *containerLXC) Path() string {
 }
 
 func (c *containerLXC) DevicesPath() string {
-	return filepath.Join(c.Path(), "devices")
+	return shared.VarPath("devices", c.Name())
 }
 
 func (c *containerLXC) LogPath() string {

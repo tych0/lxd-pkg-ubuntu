@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -164,6 +166,23 @@ func (s *storageZfs) ContainerCreateFromImage(container container, fingerprint s
 	return container.TemplateApply("create")
 }
 
+func (s *storageZfs) ContainerCanRestore(container container, sourceContainer container) error {
+	fields := strings.SplitN(sourceContainer.Name(), shared.SnapshotDelimiter, 2)
+	cName := fields[0]
+	snapName := fmt.Sprintf("snapshot-%s", fields[1])
+
+	snapshots, err := s.zfsListSnapshots(fmt.Sprintf("containers/%s", cName))
+	if err != nil {
+		return err
+	}
+
+	if snapshots[len(snapshots)-1] != snapName {
+		return fmt.Errorf("ZFS only supports restoring state to the latest snapshot.")
+	}
+
+	return nil
+}
+
 func (s *storageZfs) ContainerDelete(container container) error {
 	fs := fmt.Sprintf("containers/%s", container.Name())
 
@@ -303,26 +322,59 @@ func (s *storageZfs) ContainerCopy(container container, sourceContainer containe
 func (s *storageZfs) ContainerRename(container container, newName string) error {
 	oldName := container.Name()
 
-	err := s.zfsRename(fmt.Sprintf("containers/%s", oldName), fmt.Sprintf("containers/%s", newName))
+	// Unmount the filesystem
+	err := s.zfsUnmount(fmt.Sprintf("containers/%s", oldName))
 	if err != nil {
 		return err
 	}
 
-	err = s.zfsSet(fmt.Sprintf("containers/%s", newName), "mountpoint", shared.VarPath(fmt.Sprintf("containers/%s", newName)))
+	// Rename the filesystem
+	err = s.zfsRename(fmt.Sprintf("containers/%s", oldName), fmt.Sprintf("containers/%s", newName))
 	if err != nil {
 		return err
 	}
 
-	err = os.Rename(shared.VarPath(fmt.Sprintf("containers/%s.zfs", oldName)), shared.VarPath(fmt.Sprintf("containers/%s.zfs", newName)))
+	// Update to the new mountpoint
+	err = s.zfsSet(fmt.Sprintf("containers/%s", newName), "mountpoint", shared.VarPath(fmt.Sprintf("containers/%s.zfs", newName)))
 	if err != nil {
 		return err
 	}
 
+	// In case ZFS didn't mount the filesystem, do it ourselves
+	if !shared.PathExists(shared.VarPath(fmt.Sprintf("containers/%s.zfs", newName))) {
+		for i := 0; i < 10; i++ {
+			err = s.zfsMount(fmt.Sprintf("containers/%s", newName))
+			if err == nil {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	// In case the change of mountpoint didn't remove the old path, do it ourselves
+	if shared.PathExists(shared.VarPath(fmt.Sprintf("containers/%s.zfs", oldName))) {
+		err = os.Remove(shared.VarPath(fmt.Sprintf("containers/%s.zfs", oldName)))
+		if err != nil {
+			return err
+		}
+	}
+
+	// Remove the old symlink
 	err = os.Remove(shared.VarPath(fmt.Sprintf("containers/%s", oldName)))
 	if err != nil {
 		return err
 	}
 
+	// Create a new symlink
+	err = os.Symlink(shared.VarPath(fmt.Sprintf("containers/%s.zfs", newName)), shared.VarPath(fmt.Sprintf("containers/%s", newName)))
+	if err != nil {
+		return err
+	}
+
+	// Rename the snapshot path
 	if shared.PathExists(shared.VarPath(fmt.Sprintf("snapshots/%s", oldName))) {
 		err = os.Rename(shared.VarPath(fmt.Sprintf("snapshots/%s", oldName)), shared.VarPath(fmt.Sprintf("snapshots/%s", newName)))
 		if err != nil {
@@ -482,11 +534,14 @@ func (s *storageZfs) ContainerSnapshotStop(container container) error {
 		return err
 	}
 
-	return nil
+	/* zfs creates this directory on clone (start), so we need to clean it
+	 * up on stop */
+	return os.RemoveAll(container.Path())
 }
 
 func (s *storageZfs) ContainerSnapshotCreateEmpty(snapshotContainer container) error {
-	return fmt.Errorf("can't transfer snapshots to zfs from non-zfs backend")
+	/* don't touch the fs yet, as migration will do that for us */
+	return nil
 }
 
 func (s *storageZfs) ImageCreate(fingerprint string) error {
@@ -658,9 +713,9 @@ func (s *storageZfs) zfsDestroy(path string) error {
 	}
 
 	if mountpoint != "none" && shared.IsMountPoint(mountpoint) {
-		output, err := exec.Command("umount", "-l", mountpoint).CombinedOutput()
+		err := syscall.Unmount(mountpoint, syscall.MNT_DETACH)
 		if err != nil {
-			s.log.Error("umount failed", log.Ctx{"output": string(output)})
+			s.log.Error("umount failed", log.Ctx{"err": err})
 			return err
 		}
 	}
@@ -741,6 +796,19 @@ func (s *storageZfs) zfsGet(path string, key string) (string, error) {
 	}
 
 	return strings.TrimRight(string(output), "\n"), nil
+}
+
+func (s *storageZfs) zfsMount(path string) error {
+	output, err := exec.Command(
+		"zfs",
+		"mount",
+		fmt.Sprintf("%s/%s", s.zfsPool, path)).CombinedOutput()
+	if err != nil {
+		s.log.Error("zfs mount failed", log.Ctx{"output": string(output)})
+		return err
+	}
+
+	return nil
 }
 
 func (s *storageZfs) zfsRename(source string, dest string) error {
@@ -848,7 +916,20 @@ func (s *storageZfs) zfsSnapshotRename(path string, oldName string, newName stri
 		fmt.Sprintf("%s/%s@%s", s.zfsPool, path, oldName),
 		fmt.Sprintf("%s/%s@%s", s.zfsPool, path, newName)).CombinedOutput()
 	if err != nil {
-		s.log.Error("zfs rename failed", log.Ctx{"output": string(output)})
+		s.log.Error("zfs snapshot rename failed", log.Ctx{"output": string(output)})
+		return err
+	}
+
+	return nil
+}
+
+func (s *storageZfs) zfsUnmount(path string) error {
+	output, err := exec.Command(
+		"zfs",
+		"unmount",
+		fmt.Sprintf("%s/%s", s.zfsPool, path)).CombinedOutput()
+	if err != nil {
+		s.log.Error("zfs unmount failed", log.Ctx{"output": string(output)})
 		return err
 	}
 
@@ -904,6 +985,7 @@ func (s *storageZfs) zfsListSnapshots(path string) ([]string, error) {
 		"-o", "name",
 		"-H",
 		"-d", "1",
+		"-s", "creation",
 		"-r", fullPath).CombinedOutput()
 	if err != nil {
 		s.log.Error("zfs list failed", log.Ctx{"output": string(output)})
@@ -1017,14 +1099,243 @@ func storageZFSSetPoolNameConfig(d *Daemon, poolname string) error {
 	return nil
 }
 
+type zfsMigrationSource struct {
+	lxdName            string
+	deleteAfterSending bool
+	zfsName            string
+	zfsParent          string
+
+	zfs *storageZfs
+}
+
+func (s zfsMigrationSource) Name() string {
+	return s.lxdName
+}
+
+func (s zfsMigrationSource) IsSnapshot() bool {
+	return !s.deleteAfterSending
+}
+
+func (s zfsMigrationSource) Send(conn *websocket.Conn) error {
+	args := []string{"send", fmt.Sprintf("%s/%s", s.zfs.zfsPool, s.zfsName)}
+	if s.zfsParent != "" {
+		args = append(args, "-i", fmt.Sprintf("%s/%s", s.zfs.zfsPool, s.zfsParent))
+	}
+
+	cmd := exec.Command("zfs", args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		/* If this is not a lxd snapshot, that means it is the root container.
+		 * The way we zfs send a root container is by taking a temporary zfs
+		 * snapshot and sending that, then deleting that snapshot. Here's where
+		 * we delete it.
+		 *
+		 * Note that we can't use a defer here, because zfsDestroy
+		 * takes some time, and defer doesn't block the current
+		 * goroutine. Due to our retry mechanism for network failures
+		 * (and because zfsDestroy takes a while), we might retry
+		 * moving (and thus creating a temporary snapshot) before the
+		 * last one is deleted, resulting in either a snapshot name
+		 * collision if it was fast enough, or an extra snapshot with
+		 * an odd name on the destination side. Instead, we don't use
+		 * defer so we always block until the snapshot is dead.
+		 */
+		if s.deleteAfterSending {
+			s.zfs.zfsDestroy(s.zfsName)
+		}
+		return err
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		if s.deleteAfterSending {
+			s.zfs.zfsDestroy(s.zfsName)
+		}
+		return err
+	}
+
+	if err := cmd.Start(); err != nil {
+		if s.deleteAfterSending {
+			s.zfs.zfsDestroy(s.zfsName)
+		}
+		return err
+	}
+
+	<-shared.WebsocketSendStream(conn, stdout)
+
+	output, err := ioutil.ReadAll(stderr)
+	if err != nil {
+		shared.Log.Error("problem reading zfs send stderr", "err", err)
+	}
+
+	err = cmd.Wait()
+	if err != nil {
+		shared.Log.Error("problem with zfs send", "output", string(output))
+	}
+	if s.deleteAfterSending {
+		s.zfs.zfsDestroy(s.zfsName)
+	}
+	return err
+}
+
 func (s *storageZfs) MigrationType() MigrationFSType {
-	return MigrationFSType_RSYNC
+	return MigrationFSType_ZFS
 }
 
 func (s *storageZfs) MigrationSource(container container) ([]MigrationStorageSource, error) {
-	return rsyncMigrationSource(container)
+	sources := []MigrationStorageSource{}
+
+	/* If the container is a snapshot, let's just send that; we don't need
+	 * to send anything else, because that's all the user asked for.
+	 */
+	if container.IsSnapshot() {
+		fields := strings.SplitN(container.Name(), shared.SnapshotDelimiter, 2)
+		snapshotName := fmt.Sprintf("containers/%s@snapshot-%s", fields[0], fields[1])
+		sources = append(sources, zfsMigrationSource{container.Name(), false, snapshotName, "", s})
+		return sources, nil
+	}
+
+	/* List all the snapshots in order of reverse creation. The idea here
+	 * is that we send the oldest to newest snapshot, hopefully saving on
+	 * xfer costs. Then, after all that, we send the container itself.
+	 */
+	snapshots, err := s.zfsListSnapshots(fmt.Sprintf("containers/%s", container.Name()))
+	if err != nil {
+		return nil, err
+	}
+
+	for i, snap := range snapshots {
+		/* In the case of e.g. multiple copies running at the same
+		 * time, we will have potentially multiple migration-send
+		 * snapshots. (Or in the case of the test suite, sometimes one
+		 * will take too long to delete.)
+		 */
+		if !strings.HasPrefix(snap, "snapshot-") {
+			continue
+		}
+
+		prev := ""
+		if i > 0 {
+			prev = snapshots[i-1]
+		}
+
+		lxdName := fmt.Sprintf("%s%s%s", container.Name(), shared.SnapshotDelimiter, snap[len("snapshot-"):])
+		zfsName := fmt.Sprintf("containers/%s@%s", container.Name(), snap)
+		parentName := ""
+		if prev != "" {
+			parentName = fmt.Sprintf("containers/%s@%s", container.Name(), prev)
+		}
+
+		sources = append(sources, zfsMigrationSource{lxdName, false, zfsName, parentName, s})
+	}
+
+	/* We can't send running fses, so let's snapshot the fs and send
+	 * the snapshot.
+	 */
+	snapshotName := fmt.Sprintf("migration-send-%s", uuid.NewRandom().String())
+	if err := s.zfsSnapshotCreate(fmt.Sprintf("containers/%s", container.Name()), snapshotName); err != nil {
+		return nil, err
+	}
+
+	zfsName := fmt.Sprintf("containers/%s@%s", container.Name(), snapshotName)
+	zfsParent := ""
+	if len(sources) > 0 {
+		zfsParent = sources[len(sources)-1].(zfsMigrationSource).zfsName
+	}
+
+	sources = append(sources, zfsMigrationSource{container.Name(), true, zfsName, zfsParent, s})
+
+	return sources, nil
 }
 
 func (s *storageZfs) MigrationSink(container container, snapshots []container, conn *websocket.Conn) error {
-	return rsyncMigrationSink(container, snapshots, conn)
+	zfsRecv := func(zfsName string) error {
+		zfsFsName := fmt.Sprintf("%s/%s", s.zfsPool, zfsName)
+		args := []string{"receive", "-F", "-u", zfsFsName}
+		cmd := exec.Command("zfs", args...)
+
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+
+		<-shared.WebsocketRecvStream(stdin, conn)
+
+		output, err := ioutil.ReadAll(stderr)
+		if err != nil {
+			shared.Debugf("problem reading zfs recv stderr %s", "err", err)
+		}
+
+		err = cmd.Wait()
+		if err != nil {
+			shared.Log.Error("problem with zfs recv", "output", string(output))
+		}
+		return err
+	}
+
+	/* In some versions of zfs we can write `zfs recv -F` to mounted
+	 * filesystems, and in some versions we can't. So, let's always unmount
+	 * this fs (it's empty anyway) before we zfs recv. N.B. that `zfs recv`
+	 * of a snapshot also needs tha actual fs that it has snapshotted
+	 * unmounted, so we do this before receiving anything.
+	 *
+	 * Further, `zfs unmount` doesn't actually unmount things right away,
+	 * so we ask /proc/self/mountinfo whether or not this path is mounted
+	 * before continuing so that we're sure the fs is actually unmounted
+	 * before doing a recv.
+	 */
+	zfsName := fmt.Sprintf("containers/%s", container.Name())
+	fsPath := shared.VarPath(fmt.Sprintf("containers/%s.zfs", container.Name()))
+	for i := 0; i < 10; i++ {
+		if shared.IsMountPoint(fsPath) {
+			if err := s.zfsUnmount(zfsName); err != nil {
+				shared.Log.Error("zfs umount error for", "path", zfsName, "err", err)
+			}
+		} else {
+			break
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	for _, snap := range snapshots {
+		fields := strings.SplitN(snap.Name(), shared.SnapshotDelimiter, 2)
+		name := fmt.Sprintf("containers/%s@snapshot-%s", fields[0], fields[1])
+		if err := zfsRecv(name); err != nil {
+			return err
+		}
+
+		err := os.MkdirAll(shared.VarPath(fmt.Sprintf("snapshots/%s", fields[0])), 0700)
+		if err != nil {
+			return err
+		}
+
+		err = os.Symlink("on-zfs", shared.VarPath(fmt.Sprintf("snapshots/%s/%s.zfs", fields[0], fields[1])))
+		if err != nil {
+			return err
+		}
+	}
+
+	/* finally, do the real container */
+	if err := zfsRecv(zfsName); err != nil {
+		return err
+	}
+
+	/* Sometimes, zfs recv mounts this anyway, even if we pass -u
+	 * (https://forums.freebsd.org/threads/zfs-receive-u-shouldnt-mount-received-filesystem-right.36844/)
+	 * but sometimes it doesn't. Let's try to mount, but not complain about
+	 * failure.
+	 */
+	s.zfsMount(zfsName)
+	return nil
 }
