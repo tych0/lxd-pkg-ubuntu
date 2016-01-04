@@ -1,3 +1,26 @@
+lxd (0.26-0ubuntu1) xenial; urgency=medium
+
+  * New upstream release (0.26)
+    - New "host_name" network interface property that specifies the name
+      of the host side veth device
+    - It is now possible to pull/push/edit files of a stopped container
+    - It's now possible to specify what "lxc list" columns to show
+      (including a new PID column)
+    - Properly inherit the active CPU map rather than assuming all CPUs
+      are usable
+    - zfs: Fix a couple of race conditions
+    - lvm: Fix creation of container from an image
+    - Cut down network round trips in half by not calling Finger() every time
+    - Fix invalid permissions on container shmounts and devices directories
+    - Fix container teardown not always cleaning up devices & mounts
+    - Improve performance of host-triggered container stop/restart (5s faster)
+    - Make lxd callhook timeout after 30s
+      (instead of hanging indefinitely on failure)
+    - Cleanup and document the testsuite
+    - Fix remote certificate handling on add/rename/remove
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Mon, 04 Jan 2016 18:40:23 -0500
+
 lxd (0.25-0ubuntu1) xenial; urgency=medium
 
   * New upstream release (0.25)
