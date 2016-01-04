@@ -148,6 +148,8 @@ func containerValidDeviceConfigKey(t, k string) bool {
 			return true
 		case "nictype":
 			return true
+		case "host_name":
+			return true
 		default:
 			return false
 		}
@@ -284,6 +286,10 @@ type container interface {
 	// Live configuration
 	CGroupSet(key string, value string) error
 	ConfigKeySet(key string, value string) error
+
+	// File handling
+	FilePull(srcpath string, dstpath string) error
+	FilePush(srcpath string, dstpath string, uid int, gid int, mode os.FileMode) error
 
 	// Status
 	RenderState() (*shared.ContainerState, error)
