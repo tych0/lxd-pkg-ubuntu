@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,10 @@ import (
 
 	log "gopkg.in/inconshreveable/log15.v2"
 )
+
+// Global variables
+var lxcStoppingContainersLock sync.Mutex
+var lxcStoppingContainers map[int]*sync.WaitGroup = make(map[int]*sync.WaitGroup)
 
 // Helper functions
 func lxcSetConfigItem(c *lxc.Container, key string, value string) error {
@@ -515,6 +520,14 @@ func (c *containerLXC) initLXC() error {
 				}
 			}
 
+			// Host Virtual NIC name
+			if m["host_name"] != "" {
+				err = lxcSetConfigItem(cc, "lxc.network.veth.pair", m["host_name"])
+				if err != nil {
+					return err
+				}
+			}
+
 			// MAC address
 			if m["hwaddr"] != "" {
 				err = lxcSetConfigItem(cc, "lxc.network.hwaddr", m["hwaddr"])
@@ -775,12 +788,12 @@ func (c *containerLXC) startCommon() (string, error) {
 		return "", err
 	}
 
-	err = os.MkdirAll(shared.VarPath("devices", c.Name()), 0700)
+	err = os.MkdirAll(shared.VarPath("devices", c.Name()), 0711)
 	if err != nil {
 		return "", err
 	}
 
-	err = os.MkdirAll(shared.VarPath("shmounts", c.Name()), 0700)
+	err = os.MkdirAll(shared.VarPath("shmounts", c.Name()), 0711)
 	if err != nil {
 		return "", err
 	}
@@ -853,6 +866,12 @@ func (c *containerLXC) startCommon() (string, error) {
 }
 
 func (c *containerLXC) Start() error {
+	// Wait for container tear down to finish
+	wgStopping, stopping := lxcStoppingContainers[c.id]
+	if stopping {
+		wgStopping.Wait()
+	}
+
 	// Run the shared start code
 	configPath, err := c.startCommon()
 	if err != nil {
@@ -950,6 +969,33 @@ func (c *containerLXC) OnStart() error {
 	return nil
 }
 
+// Container shutdown locking
+func (c *containerLXC) setupStopping() *sync.WaitGroup {
+	// Handle locking
+	lxcStoppingContainersLock.Lock()
+	defer lxcStoppingContainersLock.Unlock()
+
+	// Existing entry
+	wg, stopping := lxcStoppingContainers[c.id]
+	if stopping {
+		return wg
+	}
+
+	// Setup new entry
+	lxcStoppingContainers[c.id] = &sync.WaitGroup{}
+
+	go func(wg *sync.WaitGroup, id int) {
+		wg.Wait()
+
+		lxcStoppingContainersLock.Lock()
+		defer lxcStoppingContainersLock.Unlock()
+
+		delete(lxcStoppingContainers, id)
+	}(lxcStoppingContainers[c.id], c.id)
+
+	return lxcStoppingContainers[c.id]
+}
+
 // Stop functions
 func (c *containerLXC) Stop() error {
 	// Load the go-lxc struct
@@ -961,10 +1007,21 @@ func (c *containerLXC) Stop() error {
 	// Attempt to freeze the container first, helps massively with fork bombs
 	c.Freeze()
 
+	// Handle locking
+	wg := c.setupStopping()
+
 	// Stop the container
+	wg.Add(1)
 	if err := c.c.Stop(); err != nil {
+		wg.Done()
 		return err
 	}
+
+	// Mark ourselves as done
+	wg.Done()
+
+	// Wait for any other teardown routines to finish
+	wg.Wait()
 
 	return nil
 }
@@ -976,15 +1033,32 @@ func (c *containerLXC) Shutdown(timeout time.Duration) error {
 		return err
 	}
 
+	// Handle locking
+	wg := c.setupStopping()
+
 	// Shutdown the container
+	wg.Add(1)
 	if err := c.c.Shutdown(timeout); err != nil {
+		wg.Done()
 		return err
 	}
+
+	// Mark ourselves as done
+	wg.Done()
+
+	// Wait for any other teardown routines to finish
+	wg.Wait()
 
 	return nil
 }
 
 func (c *containerLXC) OnStop(target string) error {
+	// Get locking
+	wg, stopping := lxcStoppingContainers[c.id]
+	if wg != nil {
+		wg.Add(1)
+	}
+
 	// Make sure we can't call go-lxc functions by mistake
 	c.fromHook = true
 
@@ -1001,16 +1075,29 @@ func (c *containerLXC) OnStop(target string) error {
 	}
 
 	// FIXME: The go routine can go away once we can rely on LXC_TARGET
-	go func(c *containerLXC, target string) {
+	go func(c *containerLXC, target string, wg *sync.WaitGroup) {
+		// Unlock on return
+		if wg != nil {
+			defer wg.Done()
+		}
+
+		if target == "unknown" && stopping {
+			target = "stop"
+		}
+
 		if target == "unknown" {
 			time.Sleep(5 * time.Second)
 
-			id, err := dbContainerId(c.daemon.db, c.Name())
-			if err != nil || id != c.id {
+			newContainer, err := containerLoadByName(c.daemon, c.Name())
+			if err != nil {
 				return
 			}
 
-			if c.IsRunning() {
+			if newContainer.Id() != c.id {
+				return
+			}
+
+			if newContainer.IsRunning() {
 				return
 			}
 		}
@@ -1040,7 +1127,7 @@ func (c *containerLXC) OnStop(target string) error {
 		if c.ephemeral {
 			c.Delete()
 		}
-	}(c, target)
+	}(c, target, wg)
 
 	return nil
 }
@@ -2024,6 +2111,114 @@ func (c *containerLXC) TemplateApply(trigger string) error {
 	return nil
 }
 
+func (c *containerLXC) FilePull(srcpath string, dstpath string) error {
+	// Setup container storage if needed
+	if !c.IsRunning() {
+		err := c.StorageStart()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Get the file from the container
+	out, err := exec.Command(
+		c.daemon.execPath,
+		"forkgetfile",
+		c.RootfsPath(),
+		fmt.Sprintf("%d", c.InitPID()),
+		dstpath,
+		srcpath,
+	).CombinedOutput()
+
+	// Tear down container storage if needed
+	if !c.IsRunning() {
+		err := c.StorageStop()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Process forkgetfile response
+	if string(out) != "" {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			shared.Debugf("forkgetfile: %s", line)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf(
+			"Error calling 'lxd forkgetfile %s %d %s': err='%v'",
+			dstpath,
+			c.InitPID(),
+			srcpath,
+			err)
+	}
+
+	return nil
+}
+
+func (c *containerLXC) FilePush(srcpath string, dstpath string, uid int, gid int, mode os.FileMode) error {
+	// Map uid and gid if needed
+	idmapset, err := c.LastIdmapSet()
+	if err != nil {
+		return err
+	}
+
+	if idmapset != nil {
+		uid, gid = idmapset.ShiftIntoNs(uid, gid)
+	}
+
+	// Setup container storage if needed
+	if !c.IsRunning() {
+		err := c.StorageStart()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Push the file to the container
+	out, err := exec.Command(
+		c.daemon.execPath,
+		"forkputfile",
+		c.RootfsPath(),
+		fmt.Sprintf("%d", c.InitPID()),
+		srcpath,
+		dstpath,
+		fmt.Sprintf("%d", uid),
+		fmt.Sprintf("%d", gid),
+		fmt.Sprintf("%d", mode&os.ModePerm),
+	).CombinedOutput()
+
+	// Tear down container storage if needed
+	if !c.IsRunning() {
+		err := c.StorageStop()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Process forkputfile response
+	if string(out) != "" {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			shared.Debugf("forkgetfile: %s", line)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf(
+			"Error calling 'lxd forkputfile %s %d %s %d %d %d': err='%v'",
+			srcpath,
+			c.InitPID(),
+			dstpath,
+			uid,
+			gid,
+			mode,
+			err)
+	}
+
+	return nil
+}
+
 func (c *containerLXC) ipsGet() []shared.Ip {
 	ips := []shared.Ip{}
 
@@ -2513,11 +2708,19 @@ func (c *containerLXC) removeUnixDevices() error {
 
 // Network device handling
 func (c *containerLXC) createNetworkDevice(name string, m shared.Device) (string, error) {
-	var dev string
+	var dev, n1 string
+
+	if shared.StringInSlice(m["nictype"], []string{"bridged", "p2p", "macvlan"}) {
+		// Host Virtual NIC name
+		if m["host_name"] != "" {
+			n1 = m["host_name"]
+		} else {
+			n1 = deviceNextVeth()
+		}
+	}
 
 	// Handle bridged and p2p
 	if shared.StringInSlice(m["nictype"], []string{"bridged", "p2p"}) {
-		n1 := deviceNextVeth()
 		n2 := deviceNextVeth()
 
 		err := exec.Command("ip", "link", "add", n1, "type", "veth", "peer", "name", n2).Run()
@@ -2543,7 +2746,6 @@ func (c *containerLXC) createNetworkDevice(name string, m shared.Device) (string
 
 	// Handle macvlan
 	if m["nictype"] == "macvlan" {
-		n1 := deviceNextVeth()
 
 		err := exec.Command("ip", "link", "add", n1, "link", m["parent"], "type", "macvlan", "mode", "bridge").Run()
 		if err != nil {

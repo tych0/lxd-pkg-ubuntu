@@ -253,10 +253,6 @@ func NewClient(config *Config, remote string) (*Client, error) {
 		return nil, fmt.Errorf(i18n.G("unknown remote name: %q"), remote)
 	}
 
-	if err := c.Finger(); err != nil {
-		return nil, err
-	}
-
 	return &c, nil
 }
 
@@ -970,7 +966,13 @@ func (c *Client) ListAliases() ([]shared.ImageAlias, error) {
 
 func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 	if !c.scertDigestSet {
-		return fmt.Errorf(i18n.G("No certificate on this connection"))
+		if err := c.Finger(); err != nil {
+			return err
+		}
+
+		if !c.scertDigestSet {
+			return fmt.Errorf(i18n.G("No certificate on this connection"))
+		}
 	}
 
 	if c.scert != nil {
@@ -981,17 +983,21 @@ func (c *Client) UserAuthServerCert(name string, acceptCert bool) error {
 		DNSName:       name,
 		Intermediates: c.scertIntermediates,
 	})
-	if err != nil {
-		if acceptCert == false {
-			fmt.Printf(i18n.G("Certificate fingerprint: %x")+"\n", c.scertDigest)
-			fmt.Printf(i18n.G("ok (y/n)?") + " ")
-			line, err := shared.ReadStdin()
-			if err != nil {
-				return err
-			}
-			if len(line) < 1 || line[0] != 'y' && line[0] != 'Y' {
-				return fmt.Errorf(i18n.G("Server certificate NACKed by user"))
-			}
+	if err == nil {
+		// Server trusted by system certificate
+		return nil
+	}
+
+	if acceptCert == false {
+		fmt.Printf(i18n.G("Certificate fingerprint: %x")+"\n", c.scertDigest)
+		fmt.Printf(i18n.G("ok (y/n)?") + " ")
+		line, err := shared.ReadStdin()
+		if err != nil {
+			return err
+		}
+
+		if len(line) < 1 || line[0] != 'y' && line[0] != 'Y' {
+			return fmt.Errorf(i18n.G("Server certificate NACKed by user"))
 		}
 	}
 
